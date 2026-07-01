@@ -1,0 +1,128 @@
+  * { box-sizing: border-box; }
+  body {
+    background-color: #121b30;
+    overflow-x: hidden;
+    user-select: none;
+    font-family: Inter, sans-serif;
+  }
+  html { scroll-behavior: smooth; }
+  #city-canvas {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+  .glass-panel {
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(0,240,255,0.2);
+    background: rgba(12,19,36,0.55);
+  }
+  .scanning-line {
+    position: absolute;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #00f0ff, transparent);
+    top: 0;
+    animation: scan 4s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes scan {
+    0%   { top: 0%;   opacity: 0; }
+    5%   { opacity: 1; }
+    95%  { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+  .hud-pulse { animation: pulse-glow 2s infinite alternate; }
+  @keyframes pulse-glow {
+    from { box-shadow: 0 0 5px rgba(0,240,255,0.2); }
+    to   { box-shadow: 0 0 20px rgba(0,240,255,0.5); }
+  }
+  .job-tag-float { animation: float 6s ease-in-out infinite; }
+  @keyframes float {
+    0%,100% { transform: translateY(0); }
+    50%     { transform: translateY(-10px); }
+  }
+  .syncing-overlay { animation: sp 1s ease-in-out infinite; }
+  @keyframes sp {
+    0%,100% { opacity: 0.3; }
+    50%     { opacity: 0.9; }
+  }
+  @keyframes fall {
+    from { transform: translateY(-100vh); }
+    to   { transform: translateY(200vh); }
+  }
+  /* Tooltip 3D */
+  #tooltip-3d {
+    pointer-events: none;
+    position: fixed;
+    z-index: 60;
+    display: none;
+    transform: translate(-50%, -110%);
+    transition: opacity 0.15s;
+  }
+  /* Active nav btn */
+  .nav-btn-active {
+    background: rgba(0,240,255,0.1);
+    color: #dbfcff;
+    border-left: 4px solid #00dbe9;
+  }
+  .nav-btn-idle {
+    color: #849495;
+    border-left: 4px solid transparent;
+  }
+  .nav-btn-idle:hover {
+    background: rgba(46,52,71,0.4);
+    color: #dbfcff;
+    box-shadow: 0 0 14px rgba(0,240,255,0.15);
+  }
+
+  /* Fondu du HUD quand on scroll */
+  .hud-fade { transition: opacity 0.4s ease; }
+  body.hud-hidden .hud-fade,
+  body.hud-hidden .hud-fade * { pointer-events: none !important; }
+
+  /* Mode "Vue ville" : masque toute l'interface, ne garde que la 3D */
+  body.city-only-view .hud-fade {
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+  body.city-only-view #left-sidebar,
+  body.city-only-view #sidebar-backdrop {
+    display: none !important;
+  }
+
+  /* Sections qui apparaissent en 3D au scroll */
+  #scroll-sections { position: relative; z-index: 30; }
+  .reveal-3d {
+    opacity: 0;
+    transform: perspective(1400px) rotateX(30deg) translateY(80px) scale(0.9);
+    transition: opacity 1s cubic-bezier(.16,.84,.44,1), transform 1s cubic-bezier(.16,.84,.44,1);
+    will-change: transform, opacity;
+  }
+  .reveal-3d.in-view {
+    opacity: 1;
+    transform: perspective(1400px) rotateX(0deg) translateY(0) scale(1);
+  }
+  .tilt-card {
+    transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+    transform-style: preserve-3d;
+  }
+  .tilt-card:hover {
+    box-shadow: 0 0 30px rgba(0,240,255,0.25);
+    border-color: rgba(0,240,255,0.6);
+  }
+  .section-title {
+    font-family: 'Space Mono', monospace;
+    letter-spacing: 0.25em;
+  }
+
+  /* Mobile : effets 3D plus doux + tailles ajustées */
+  @media (max-width: 768px) {
+    .reveal-3d {
+      transform: perspective(900px) rotateX(14deg) translateY(40px) scale(0.95);
+    }
+    .reveal-3d.in-view {
+      transform: perspective(900px) rotateX(0deg) translateY(0) scale(1);
+    }
+    #tooltip-3d { display: none !important; }
+  }

@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html class="dark" lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>NEURAL_CITY | Exploration Professionnelle</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script id="tailwind-config">
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "surface-dim": "#0c1324",
+        "secondary": "#ebb2ff",
+        "outline": "#849495",
+        "on-surface-variant": "#b9cacb",
+        "on-surface": "#dce1fb",
+        "primary": "#dbfcff",
+        "surface": "#0c1324",
+        "error": "#ffb4ab",
+        "outline-variant": "#3b494b",
+        "surface-tint": "#00dbe9",
+        "inverse-surface": "#dce1fb",
+        "surface-container-low": "#151b2d",
+        "surface-container-highest": "#2e3447",
+        "secondary-container": "#b600f8",
+        "on-secondary": "#520072",
+        "background": "#0c1324",
+        "on-primary": "#00363a",
+        "primary-container": "#00f0ff",
+        "inverse-on-surface": "#2a3043",
+        "on-primary-fixed-variant": "#004f54",
+        "surface-variant": "#2e3447",
+        "surface-bright": "#33394c",
+        "on-background": "#dce1fb",
+        "surface-container-high": "#23293c",
+        "on-primary-container": "#006970",
+        "surface-container": "#191f31",
+        "surface-container-lowest": "#070d1f",
+      },
+      fontFamily: {
+        "label-mono": ["Space Mono"],
+        "body-base": ["Inter"],
+      },
+    },
+  },
+}
+</script>
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body class="text-on-surface">
+
+<!-- ═══════════════════════════════════════════════
+     THREE.JS CANVAS — couche 0
+════════════════════════════════════════════════ -->
+<canvas id="city-canvas"></canvas>
+
+<!-- ═══════════════════════════════════════════════
+     TOOLTIP FLOTTANT (hover bâtiment)
+════════════════════════════════════════════════ -->
+<div id="tooltip-3d" class="hud-fade">
+  <div class="glass-panel rounded-xl px-4 py-3 min-w-[160px]">
+    <div class="flex justify-between items-center mb-1">
+      <span id="tt-id" class="font-mono text-[9px] tracking-widest text-[#00f0ff]">ID: —</span>
+      <span id="tt-icon" class="text-[#00f0ff] text-base">⬡</span>
+    </div>
+    <div id="tt-name" class="font-bold text-[#dbfcff] text-base leading-tight mb-1">—</div>
+    <div id="tt-sub"  class="text-[10px] uppercase tracking-tight text-[#849495]">—</div>
+    <div class="mt-2 h-[2px] bg-[#00f0ff]/20 w-full overflow-hidden">
+      <div id="tt-bar" class="h-full bg-[#00f0ff]" style="width:60%"></div>
+    </div>
+  </div>
+  <div class="w-[2px] h-8 bg-gradient-to-b from-[#00f0ff]/60 to-transparent mx-auto"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     UI OVERLAY
+════════════════════════════════════════════════ -->
+<div class="relative z-20 pointer-events-none w-full h-screen flex flex-col hud-fade">
+
+  <!-- TOP NAV -->
+  <header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-4 md:px-6 py-2
+                 bg-[#0c1324]/70 backdrop-blur-xl border-b border-[#00f0ff]/20
+                 shadow-[0_0_15px_rgba(0,240,255,0.08)] pointer-events-auto">
+    <div class="flex items-center gap-3 md:gap-8 min-w-0">
+      <button id="menu-toggle" aria-label="Menu"
+              class="flex-shrink-0 w-9 h-9 flex items-center justify-center
+                     rounded-lg border border-[#00f0ff]/30 bg-[#151b2d]/60
+                     text-[#00f0ff] text-base leading-none hover:bg-[#00f0ff]/10
+                     hover:border-[#00f0ff]/60 transition-colors">☰</button>
+      <div class="flex-shrink-0 font-mono text-xs font-bold text-[#00dbe9] animate-pulse flex items-center gap-2 tracking-widest whitespace-nowrap">
+        ◈ NEURAL_CITY
+      </div>
+      <nav class="hidden md:flex items-center gap-6 font-mono text-[11px] uppercase tracking-widest">
+        <a class="text-[#849495] hover:text-[#00f0ff] hover:drop-shadow-[0_0_6px_#00f0ff] transition-all" href="#">Réseau</a>
+        <a class="text-[#849495] hover:text-[#00f0ff] hover:drop-shadow-[0_0_6px_#00f0ff] transition-all" href="#">Analyse</a>
+        <a class="text-[#00dbe9] border-b-2 border-[#00dbe9] pb-0.5 transition-all" href="#">Carte_Secteur</a>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 md:gap-4 flex-shrink-0">
+      <button id="daynight-toggle" aria-label="Mode jour / nuit" class="w-8 h-8 flex items-center justify-center rounded-lg text-[#849495] hover:text-[#00f0ff] hover:bg-[#00f0ff]/10 transition-colors">
+        <svg id="daynight-icon-moon" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+        </svg>
+        <svg id="daynight-icon-sun" class="hidden" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M12 2v2.5M12 19.5V22M22 12h-2.5M4.5 12H2M19.07 4.93l-1.77 1.77M6.7 17.3l-1.77 1.77M19.07 19.07l-1.77-1.77M6.7 6.7 4.93 4.93" stroke="currentColor" stroke-linecap="round" stroke-width="1.6"/>
+        </svg>
+      </button>
+      <button aria-label="Notifications" class="w-8 h-8 flex items-center justify-center rounded-lg text-[#849495] hover:text-[#00f0ff] hover:bg-[#00f0ff]/10 transition-colors">
+        <svg fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+        </svg>
+      </button>
+      <button aria-label="Paramètres" class="w-8 h-8 flex items-center justify-center rounded-lg text-[#849495] hover:text-[#00f0ff] hover:bg-[#00f0ff]/10 transition-colors">
+        <svg fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Fond noir derrière le menu mobile -->
+  <div id="sidebar-backdrop" class="fixed inset-0 bg-black/60 z-30 hidden"></div>
+
+  <!-- SIDE NAV LEFT -->
+  <aside id="left-sidebar" class="fixed left-3 md:left-6 top-20 bottom-8 w-72 max-w-[80vw] z-40 flex flex-col p-4
+                glass-panel rounded-xl shadow-[inset_0_0_10px_rgba(0,219,233,0.08)]
+                pointer-events-auto overflow-hidden
+                transition-transform duration-300 ease-out" style="transform:translateX(-150%);">
+    <div class="scanning-line"></div>
+    <button id="sidebar-close" class="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-lg text-[#849495] hover:text-[#00f0ff] hover:bg-[#00f0ff]/10 text-base z-10">✕</button>
+
+
+    <!-- Profil -->
+    <div class="mb-6">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-10 h-10 rounded-lg bg-[#00f0ff]/10 border border-[#00f0ff]/40
+                    flex items-center justify-center text-[#00f0ff] text-xl">◈</div>
+        <div>
+          <h2 class="font-mono text-sm font-bold text-[#dbfcff] leading-tight" id="main-panel-title">SECTOR_QUERY</h2>
+          <div class="flex items-center gap-2">
+            <p class="font-mono text-[9px] text-[#849495]">V.2.04_HUD</p>
+            <span class="hidden font-mono text-[9px] text-[#00f0ff] syncing-overlay" id="syncing-indicator">[SYNCING...]</span>
+          </div>
+        </div>
+      </div>
+      <div class="h-px w-full bg-gradient-to-r from-[#00f0ff]/40 to-transparent"></div>
+    </div>
+
+    <!-- Navigation secteurs (groupés par zone) -->
+    <nav class="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1" id="side-nav">
+      <div>
+        <p class="font-mono text-[9px] tracking-widest text-[#00f0ff]/70 px-3 mb-1 uppercase">◈ Secteur Web / Frontend</p>
+        <div class="space-y-1">
+          <button class="nav-btn-active w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="JavaScript" data-label="JavaScript">
+            <span class="text-base">JS</span><span>JavaScript</span>
+            <span class="ml-auto text-[8px] opacity-50">ACTIVE</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="TypeScript" data-label="TypeScript">
+            <span class="text-base">TS</span><span>TypeScript</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="React" data-label="React">
+            <span class="text-base">⚛</span><span>React</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="jQuery" data-label="jQuery">
+            <span class="text-base">jQ</span><span>jQuery</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="HTML" data-label="HTML">
+            <span class="text-base">HTM</span><span>HTML</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="CSS" data-label="CSS">
+            <span class="text-base">CSS</span><span>CSS</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <p class="font-mono text-[9px] tracking-widest text-[#ff44cc]/70 px-3 mb-1 uppercase">◈ Secteur Backend</p>
+        <div class="space-y-1">
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="PHP" data-label="PHP">
+            <span class="text-base">PHP</span><span>PHP</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="Java" data-label="Java">
+            <span class="text-base">JV</span><span>Java</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="Node.js" data-label="Node.js">
+            <span class="text-base">ND</span><span>Node.js</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <p class="font-mono text-[9px] tracking-widest text-[#00f0ff]/70 px-3 mb-1 uppercase">◈ Secteur Data / IA</p>
+        <div class="space-y-1">
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="Python" data-label="Python">
+            <span class="text-base">PY</span><span>Python</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="SQL" data-label="SQL">
+            <span class="text-base">DB</span><span>SQL</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <p class="font-mono text-[9px] tracking-widest text-[#00f0ff]/70 px-3 mb-1 uppercase">◈ Secteur Système</p>
+        <div class="space-y-1">
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="C++" data-label="C++">
+            <span class="text-base">C++</span><span>C++</span>
+          </button>
+          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
+                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
+                  data-job="Docker" data-label="Docker">
+            <span class="text-base">DK</span><span>Docker</span>
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <div class="mt-auto space-y-3 pt-6">
+      <button class="w-full py-2.5 bg-[#00f0ff] text-[#00363a] font-mono text-[11px] font-bold
+                     rounded-lg shadow-[0_0_18px_#00f0ff] hover:scale-[1.02] active:scale-[0.98]
+                     transition-transform tracking-widest">
+        EXPAND_DATA
+      </button>
+      <div class="flex gap-2 text-[#849495]">
+        <button class="flex-1 flex items-center justify-center gap-1.5 py-2 hover:text-[#00f0ff]
+                       transition-colors font-mono text-[10px] uppercase tracking-wider">
+          ? Support
+        </button>
+        <button class="flex-1 flex items-center justify-center gap-1.5 py-2 hover:text-[#00f0ff]
+                       transition-colors font-mono text-[10px] uppercase tracking-wider">
+          &gt;_ Logs
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- SIDE RIGHT STATS -->
+  <aside class="hidden lg:block fixed right-6 top-20 w-60 z-40 pointer-events-auto space-y-4">
+
+    <!-- Télémétrie -->
+    <div class="glass-panel p-4 rounded-xl relative overflow-hidden">
+      <div class="scanning-line" style="animation-delay:-2s;"></div>
+      <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Telemetry_Status</h4>
+      <div class="space-y-3">
+        <div>
+          <div class="flex justify-between font-mono text-[9px] mb-1 text-[#b9cacb]">
+            <span>GRID_LOAD</span><span class="text-[#00f0ff]">82%</span>
+          </div>
+          <div class="h-1.5 w-full bg-[#00f0ff]/10 rounded-full overflow-hidden">
+            <div class="h-full bg-[#00f0ff] rounded-full" style="width:82%"></div>
+          </div>
+        </div>
+        <div>
+          <div class="flex justify-between font-mono text-[9px] mb-1 text-[#b9cacb]">
+            <span>POPULATION</span><span class="text-[#ebb2ff]">CRITIQUE</span>
+          </div>
+          <div class="h-1.5 w-full bg-[#ebb2ff]/10 rounded-full overflow-hidden">
+            <div class="h-full bg-[#ebb2ff] rounded-full" style="width:100%"></div>
+          </div>
+        </div>
+        <div>
+          <div class="flex justify-between font-mono text-[9px] mb-1 text-[#b9cacb]">
+            <span>NEURAL_SYNC</span><span class="text-[#00f0ff]" id="sync-pct">67%</span>
+          </div>
+          <div class="h-1.5 w-full bg-[#00f0ff]/10 rounded-full overflow-hidden">
+            <div class="h-full bg-[#00f0ff] rounded-full" id="sync-bar" style="width:67%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sélection active -->
+    <div class="glass-panel p-4 rounded-xl" id="selection-panel">
+      <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Secteur_Actif</h4>
+      <div class="font-mono text-[11px] text-[#849495] space-y-1.5" id="selection-info">
+        <div>⬡ <span class="text-[#dbfcff]" id="sel-job">SQL</span></div>
+        <div>▸ Offres: <span class="text-[#00f0ff]" id="sel-count">2,847</span></div>
+        <div>▸ Tendance: <span class="text-green-400" id="sel-trend">↑ +12%</span></div>
+        <div>▸ Zone: <span class="text-[#dbfcff]" id="sel-zone">Secteur Δ</span></div>
+      </div>
+    </div>
+
+    <!-- Filtres -->
+    <div class="glass-panel p-4 rounded-xl">
+      <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Filtres_Mission</h4>
+      <div class="flex flex-wrap gap-1.5">
+        <span class="px-2 py-1 bg-[#00f0ff]/10 border border-[#00f0ff]/30 rounded text-[9px]
+                     font-mono text-[#00f0ff] cursor-pointer hover:bg-[#00f0ff]/20 transition-colors">TEMPS_PLEIN</span>
+        <span class="px-2 py-1 bg-[#2e3447]/40 border border-[#849495]/30 rounded text-[9px]
+                     font-mono text-[#849495] cursor-pointer hover:border-[#00f0ff]/50 transition-colors">CONTRAT</span>
+        <span class="px-2 py-1 bg-[#2e3447]/40 border border-[#849495]/30 rounded text-[9px]
+                     font-mono text-[#849495] cursor-pointer hover:border-[#00f0ff]/50 transition-colors">HYBRIDE</span>
+        <span class="px-2 py-1 bg-[#00f0ff]/10 border border-[#00f0ff]/30 rounded text-[9px]
+                     font-mono text-[#00f0ff] cursor-pointer">L7_CYBER_SEC</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- FOOTER STATUS -->
+  <footer class="fixed bottom-0 left-0 w-full h-7 bg-[#070d1f]/90 border-t border-[#00f0ff]/10
+                 flex items-center justify-between px-3 md:px-8 z-50 pointer-events-auto overflow-hidden">
+    <div class="flex items-center gap-3 md:gap-6">
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full bg-green-400 hud-pulse"></div>
+        <span class="font-mono text-[9px] text-[#849495] tracking-widest">SYSTEM_ONLINE_0X88</span>
+      </div>
+      <span class="hidden sm:inline font-mono text-[9px] text-[#849495] tracking-wider">LOC: 48.8566°N 2.3522°E</span>
+    </div>
+    <div class="flex items-center gap-3 md:gap-5 font-mono text-[9px] tracking-wider">
+      <span class="hidden sm:inline text-[#849495]">LATENCE: <span id="latency">12ms</span></span>
+      <span class="hidden md:inline text-[#849495]">SYNC: STABLE</span>
+      <span class="text-[#00dbe9]">NEURAL_LINK: ACTIVE</span>
+    </div>
+  </footer>
+</div>
+
+<!-- Bouton "Vue ville" — masque toute l'interface pour ne garder que la 3D.
+     Volontairement en dehors du bloc hud-fade pour rester cliquable même
+     quand l'UI est cachée. -->
+<button id="city-view-toggle" aria-label="Vue ville seule"
+        class="fixed top-2.5 right-2.5 md:top-3 md:right-3 z-[60] w-9 h-9 flex items-center justify-center
+               rounded-lg border border-[#00f0ff]/30 bg-[#0c1324]/80 backdrop-blur-md
+               text-[#00f0ff] hover:bg-[#00f0ff]/10 hover:border-[#00f0ff]/60 transition-colors">
+  <svg id="city-view-icon-eye" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/>
+  </svg>
+  <svg id="city-view-icon-eye-off" class="hidden" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+    <path d="M9.9 4.24A9.9 9.9 0 0 1 12 4c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.16 3.19M6.6 6.6C3.5 8.5 2 11.99 2 11.99S5.5 19 12 19a9.9 9.9 0 0 0 4.24-.94M9.88 9.88a3 3 0 1 0 4.24 4.24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+    <path d="M2 2l20 20" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/>
+  </svg>
+</button>
+
+<!-- Mini-carte : position de la caméra + zones de la ville.
+     En dehors de hud-fade, comme le bouton "vue ville", pour rester visible. -->
+<div class="fixed bottom-10 left-3 md:left-6 z-[60] rounded-lg border border-[#00f0ff]/25 bg-[#0c1324]/75 backdrop-blur-md p-1.5">
+  <canvas id="minimap-canvas" height="112" width="112"></canvas>
+</div>
+
+<!-- Pluie décorative -->
+<div class="fixed inset-0 pointer-events-none z-10 overflow-hidden opacity-20 hud-fade">
+  <div class="absolute w-px h-20 bg-[#00f0ff]/40 -top-20 left-1/4" style="animation: fall 5s linear infinite; animation-delay:1s;"></div>
+  <div class="absolute w-px h-32 bg-[#ebb2ff]/40 -top-32 left-3/4" style="animation: fall 7s linear infinite; animation-delay:3s;"></div>
+  <div class="absolute w-px h-40 bg-[#00f0ff]/30 -top-40 left-1/2" style="animation: fall 6s linear infinite;"></div>
+  <div class="absolute w-px h-24 bg-[#00f0ff]/40 -top-24 left-[60%]" style="animation: fall 4.5s linear infinite; animation-delay:2s;"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SECTIONS SCROLLABLES — apparition 3D
+════════════════════════════════════════════════ -->
+<main id="scroll-sections">
+
+  <!-- Espace pour garder la scène 3D plein écran au départ -->
+  <div style="height:100vh;"></div>
+
+  <!-- STACK TECHNIQUE -->
+  <section class="reveal-3d max-w-6xl mx-auto px-6 md:px-10 py-24">
+    <div class="mb-10 text-center">
+      <span class="section-title text-[#00f0ff] text-xs uppercase">// Secteurs_Actifs</span>
+      <h2 class="text-3xl md:text-4xl font-bold text-[#dbfcff] mt-2">Stack Technique</h2>
+      <p class="text-[#849495] font-mono text-xs mt-2">Chaque bâtiment de la ville représente un langage</p>
+    </div>
+    <div id="stack-grid" class="grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+  </section>
+
+  <!-- À PROPOS -->
+  <section class="reveal-3d max-w-4xl mx-auto px-6 md:px-10 py-24">
+    <div class="glass-panel tilt-card rounded-2xl p-8 md:p-12">
+      <span class="section-title text-[#ebb2ff] text-xs uppercase">// À_Propos</span>
+      <h2 class="text-2xl md:text-3xl font-bold text-[#dbfcff] mt-2 mb-4">NEURAL_CITY</h2>
+      <p class="text-[#b9cacb] leading-relaxed font-mono text-sm">
+        NEURAL_CITY est une ville cyberpunk générée en Three.js où chaque quartier
+        représente un langage ou une techno. Survole, clique sur un bâtiment,
+        ou choisis un secteur dans le menu pour que la caméra s'y déplace.
+        Le projet grandit petit à petit — nouveaux secteurs, nouvelles interactions,
+        nouveaux effets à chaque étape.
+      </p>
+      <div class="grid grid-cols-3 gap-4 mt-8 font-mono text-center">
+        <div>
+          <div class="text-2xl text-[#00f0ff] font-bold">90+</div>
+          <div class="text-[9px] text-[#849495] uppercase tracking-widest">Bâtiments</div>
+        </div>
+        <div>
+          <div class="text-2xl text-[#ebb2ff] font-bold">4</div>
+          <div class="text-[9px] text-[#849495] uppercase tracking-widest">Zones</div>
+        </div>
+        <div>
+          <div class="text-2xl text-[#00f0ff] font-bold">100%</div>
+          <div class="text-[9px] text-[#849495] uppercase tracking-widest">Fait maison</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TELEMETRY GLOBALE -->
+  <section class="reveal-3d max-w-6xl mx-auto px-6 md:px-10 py-24">
+    <div class="mb-10 text-center">
+      <span class="section-title text-[#00f0ff] text-xs uppercase">// Telemetry_Globale</span>
+      <h2 class="text-3xl md:text-4xl font-bold text-[#dbfcff] mt-2">État du Réseau</h2>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <div class="glass-panel tilt-card rounded-xl p-6">
+        <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Charge Grille</h4>
+        <div class="h-1.5 w-full bg-[#00f0ff]/10 rounded-full overflow-hidden mb-2">
+          <div class="h-full bg-[#00f0ff] rounded-full" style="width:82%"></div>
+        </div>
+        <p class="text-[#849495] font-mono text-xs">82% — Stable sous forte charge</p>
+      </div>
+      <div class="glass-panel tilt-card rounded-xl p-6">
+        <h4 class="font-mono text-[10px] tracking-widest text-[#ebb2ff] mb-3 uppercase">Population Active</h4>
+        <div class="h-1.5 w-full bg-[#ebb2ff]/10 rounded-full overflow-hidden mb-2">
+          <div class="h-full bg-[#ebb2ff] rounded-full" style="width:100%"></div>
+        </div>
+        <p class="text-[#849495] font-mono text-xs">Critique — pic d'activité en cours</p>
+      </div>
+      <div class="glass-panel tilt-card rounded-xl p-6">
+        <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Sync Neurale</h4>
+        <div class="h-1.5 w-full bg-[#00f0ff]/10 rounded-full overflow-hidden mb-2">
+          <div class="h-full bg-[#00f0ff] rounded-full" style="width:67%"></div>
+        </div>
+        <p class="text-[#849495] font-mono text-xs">67% — Synchronisation en cours</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTACT / FIN -->
+  <section class="reveal-3d max-w-3xl mx-auto px-6 md:px-10 py-32 text-center">
+    <span class="section-title text-[#00f0ff] text-xs uppercase">// Neural_Link</span>
+    <h2 class="text-3xl md:text-4xl font-bold text-[#dbfcff] mt-2 mb-4">Rejoindre le Réseau</h2>
+    <p class="text-[#849495] font-mono text-xs mb-8">Fin du flux de données — remonte pour reprendre l'exploration</p>
+    <button onclick="window.scrollTo({top:0,behavior:'smooth'})"
+            class="px-8 py-3 bg-[#00f0ff] text-[#00363a] font-mono text-xs font-bold
+                   rounded-lg shadow-[0_0_18px_#00f0ff] hover:scale-[1.03] active:scale-[0.97]
+                   transition-transform tracking-widest">
+      ↑ RETOUR_EN_HAUT
+    </button>
+  </section>
+
+</main>
+
+<!-- ═══════════════════════════════════════════════
+     THREE.JS — VILLE 3D CORRIGÉE
+════════════════════════════════════════════════ -->
+<script src="script.js"></script>
+</body>
+</html>
+
