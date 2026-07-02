@@ -699,6 +699,7 @@
 
   function updateMovingCars(phase) {
     movingCars.forEach(car => {
+      if (car === drivingCar) return; // pilotée par le joueur, pas par l'IA (voir updateCarControls)
       const axisLetter = car.axis === 'x' ? 'X' : 'Z';
       const axisMoving = phase[0] === axisLetter; // vert ou orange pour cet axe
       let targetSpeed = car.baseSpeed;
@@ -2019,6 +2020,8 @@
   // donnait l'impression que rien ne se passait. On le voit d'abord
   // apparaître, et on peut passer en 1re personne ensuite (bouton/touche V).
   let thirdPerson = true;
+  let playerLookX = 0; // -0.5..0.5, position souris par rapport au centre — tourne en continu
+  const PLAYER_TURN_RATE = 0.05;
   const PLAYER_RADIUS = 9; // distance de la caméra en vue 3e personne
   const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
@@ -2033,7 +2036,7 @@
   }
   if (viewModeToggle) viewModeToggle.addEventListener('click', toggleViewMode);
   window.addEventListener('keydown', (e) => {
-    if (e.key.toLowerCase() === 'v' && playerActive) toggleViewMode();
+    if (!e.repeat && e.key.toLowerCase() === 'v' && playerActive) toggleViewMode();
   });
 
   /* Le bouton "Explorer à pied" rend le mode découvrable : avant, il
@@ -2057,9 +2060,11 @@
     refreshWalkUI();
   }
   function deactivatePlayer() {
+    if (drivingCar) exitCar(); // repose la voiture proprement (rend la main à l'IA) avant de quitter
     playerActive = false;
     player.visible = false;
     lookPitch = 0;
+    playerLookX = 0;
     focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant le mode piéton
     refreshWalkUI();
   }
@@ -2068,11 +2073,12 @@
 
   /* ── Collisions ──
      Le bonhomme ne traverse plus les bâtiments (boîtes 1.8×1.8 centrées
-     sur group.position) et reste dans les limites du monde (la rivière
-     commence vers z≈49, d'où le plafond à 46). Poussée hors de la boîte
-     par l'axe le moins enfoncé : on "glisse" le long des murs au lieu de
-     rester bloqué net. ~81 bâtiments testés par frame = négligeable. */
+     sur group.position) ni les magasins (idem, un peu plus petits), et
+     reste dans les limites du monde (la rivière commence vers z≈49, d'où
+     le plafond à 46). Poussée hors de la boîte par l'axe le moins enfoncé :
+     on "glisse" le long des murs au lieu de rester bloqué net. */
   const PLAYER_CLEARANCE = 1.25;
+  const SHOP_CLEARANCE = 1.15;
   function resolvePlayerCollisions(nx, nz) {
     nx = Math.max(-68, Math.min(68, nx));
     nz = Math.max(-68, Math.min(46, nz));
@@ -2084,7 +2090,123 @@
         else                             nz = b.z + (dz >= 0 ? 1 : -1) * PLAYER_CLEARANCE;
       }
     }
+    for (let i = 0; i < shops.length; i++) {
+      const s = shops[i].position;
+      const dx = nx - s.x, dz = nz - s.z;
+      if (Math.abs(dx) < SHOP_CLEARANCE && Math.abs(dz) < SHOP_CLEARANCE) {
+        if (Math.abs(dx) > Math.abs(dz)) nx = s.x + (dx >= 0 ? 1 : -1) * SHOP_CLEARANCE;
+        else                             nz = s.z + (dz >= 0 ? 1 : -1) * SHOP_CLEARANCE;
+      }
+    }
     return { x: nx, z: nz };
+  }
+
+  /* ── Voiture jouable ──
+     Touche E, à moins de ~3.2 unités d'une voiture : elle arrête de
+     suivre son rail/les feux (updateMovingCars l'ignore tant qu'on la
+     conduit) et se pilote librement — avancer/reculer + tourner comme une
+     vraie voiture (le volant tourne la voiture elle-même, pas juste la
+     caméra comme à pied). En sortant, elle reste garée là où on l'a
+     laissée ; son "pos" est resynchronisé pour que l'IA reparte
+     proprement de cet endroit plutôt que de sauter ailleurs. */
+  let drivingCar = null;
+  let carFacing = 0;
+  const CAR_SPEED = 0.85;
+  const CAR_TURN_SPEED = 0.045;
+  const CAR_CLEARANCE = 1.5;
+  const carPrompt = document.getElementById('car-prompt');
+
+  function resolveCarCollisions(nx, nz) {
+    nx = Math.max(-68, Math.min(68, nx));
+    nz = Math.max(-68, Math.min(46, nz));
+    for (let i = 0; i < buildings.length; i++) {
+      const b = buildings[i].position;
+      const dx = nx - b.x, dz = nz - b.z;
+      if (Math.abs(dx) < CAR_CLEARANCE && Math.abs(dz) < CAR_CLEARANCE) {
+        if (Math.abs(dx) > Math.abs(dz)) nx = b.x + (dx >= 0 ? 1 : -1) * CAR_CLEARANCE;
+        else                             nz = b.z + (dz >= 0 ? 1 : -1) * CAR_CLEARANCE;
+      }
+    }
+    for (let i = 0; i < shops.length; i++) {
+      const s = shops[i].position;
+      const dx = nx - s.x, dz = nz - s.z;
+      if (Math.abs(dx) < CAR_CLEARANCE && Math.abs(dz) < CAR_CLEARANCE) {
+        if (Math.abs(dx) > Math.abs(dz)) nx = s.x + (dx >= 0 ? 1 : -1) * CAR_CLEARANCE;
+        else                             nz = s.z + (dz >= 0 ? 1 : -1) * CAR_CLEARANCE;
+      }
+    }
+    return { x: nx, z: nz };
+  }
+
+  function nearestCar() {
+    let best = null, bestDist = 3.2;
+    movingCars.forEach(car => {
+      const dx = car.group.position.x - player.position.x;
+      const dz = car.group.position.z - player.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d < bestDist) { bestDist = d; best = car; }
+    });
+    return best;
+  }
+
+  function enterCar(car) {
+    drivingCar = car;
+    carFacing = car.group.rotation.y;
+    player.visible = false;
+    if (carPrompt) carPrompt.classList.add('hidden');
+  }
+  function exitCar() {
+    if (!drivingCar) return;
+    const carPos = drivingCar.group.position;
+    // Descend à côté de la voiture (perpendiculaire à son cap), pas dedans
+    focusTarget.x = carPos.x + Math.sin(carFacing + Math.PI / 2) * 1.8;
+    focusTarget.z = carPos.z + Math.cos(carFacing + Math.PI / 2) * 1.8;
+    player.position.set(focusTarget.x, 0, focusTarget.z);
+    player.visible = thirdPerson;
+    playerFacing = carFacing;
+    drivingCar.pos = drivingCar.axis === 'x' ? drivingCar.group.position.x : drivingCar.group.position.z;
+    drivingCar.speed = 0;
+    drivingCar = null;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    // e.repeat : sans ça, laisser la touche enfoncée (répétition clavier
+    // du système) ferait rentrer/sortir de la voiture en boucle très vite.
+    if (e.repeat || e.key.toLowerCase() !== 'e' || !playerActive) return;
+    if (drivingCar) exitCar();
+    else {
+      const car = nearestCar();
+      if (car) enterCar(car);
+    }
+  });
+
+  function updateCarControls() {
+    let fInput = 0, turnInput = 0;
+    if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
+    if (walkKeys['s'] || walkKeys['arrowdown'])                  fInput -= 1;
+    if (walkKeys['d'] || walkKeys['arrowright'])                 turnInput += 1;
+    if (walkKeys['a'] || walkKeys['q'] || walkKeys['arrowleft']) turnInput -= 1;
+    fInput += joyInput.f;
+    turnInput += joyInput.r;
+
+    // Le volant ne tourne que si la voiture avance ou recule (comme une
+    // vraie voiture — impossible de tourner à l'arrêt), et inversé en
+    // marche arrière (braquer à droite en reculant tourne vers la gauche).
+    if (fInput !== 0) carFacing -= turnInput * CAR_TURN_SPEED * Math.sign(fInput);
+
+    // Le corps de la voiture (BoxGeometry 1.4×0.45×0.5) a son avant sur
+    // l'axe X local (c'est là qu'est le phare), pas -Z comme le bonhomme
+    // — la formule de déplacement doit suivre CET axe-là, sinon la
+    // voiture avance "de travers" par rapport à ce qu'on voit à l'écran.
+    // Pour rotation.y=carFacing, l'avant (local +X) pointe en monde vers
+    // (cos(carFacing), -sin(carFacing)).
+    const speed = CAR_SPEED * Math.max(-0.6, Math.min(1, fInput));
+    const dx =  Math.cos(carFacing) * speed;
+    const dz = -Math.sin(carFacing) * speed;
+    const solved = resolveCarCollisions(drivingCar.group.position.x + dx, drivingCar.group.position.z + dz);
+    drivingCar.group.position.x = solved.x;
+    drivingCar.group.position.z = solved.z;
+    drivingCar.group.rotation.y = carFacing;
   }
 
   /* ── Joystick virtuel (mobile) ──
@@ -2133,6 +2255,19 @@
       return;
     }
     if (focused) return;
+
+    // Tourne en continu tant que le curseur n'est pas centré (voir le
+    // mousemove ci-dessous) — c'est ÇA qui fait "tourner la caméra", et
+    // comme fx/fz (plus bas) recalculent la direction de marche à partir
+    // de ce même orbit.theta à chaque frame, le déplacement suit toujours
+    // exactement là où on regarde désormais.
+    if (playerLookX !== 0) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
+
+    if (drivingCar) {
+      updateCarControls();
+      return; // le clavier pilote la voiture, pas le bonhomme, tant qu'on conduit
+    }
+    if (carPrompt) carPrompt.classList.toggle('hidden', !nearestCar());
 
     let fInput = 0, rInput = 0;
     if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
@@ -2208,6 +2343,18 @@
       } else {
         orbit.phi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi - dy * 0.006));
       }
+      return;
+    }
+    // En mode piéton (sans glisser) : tourner progressivement selon la
+    // position du curseur PAR RAPPORT AU CENTRE de l'écran (pas sa
+    // position absolue comme en navigation normale) — plus le curseur
+    // s'écarte du centre, plus ça tourne vite ; centré = ne tourne pas.
+    // L'ancienne version recopiait la position absolue de la souris sur
+    // orbit.theta à chaque frame, ce qui réorientait le bonhomme au hasard
+    // dès qu'on bougeait la souris, même sans intention de tourner.
+    if (playerActive) {
+      const nx = e.clientX / window.innerWidth - 0.5; // -0.5 (bord gauche) .. 0.5 (bord droit)
+      playerLookX = Math.abs(nx) < 0.06 ? 0 : nx;
       return;
     }
     if (focused) return;
@@ -2505,11 +2652,13 @@
     orbitSmooth.theta += dt * (focused || playerActive ? FOCUS_LERP : LERP);
 
     if (playerActive && !thirdPerson) {
-      // Vue 1re personne : la caméra est aux yeux du bonhomme, pas en
+      // Vue 1re personne : la caméra est aux yeux du bonhomme (ou du
+      // conducteur, un peu plus haut, si on est en voiture), pas en
       // orbite autour d'un point — plus de rayon/hauteur d'orbite ici,
       // juste une position + un regard (lacet=orbit.theta, tangage=lookPitch).
-      const EYE_HEIGHT = 0.75;
-      camera.position.set(player.position.x, EYE_HEIGHT, player.position.z);
+      const targetPos = drivingCar ? drivingCar.group.position : player.position;
+      const EYE_HEIGHT = drivingCar ? 1.0 : 0.75;
+      camera.position.set(targetPos.x, EYE_HEIGHT, targetPos.z);
       camera.lookAt(
         camera.position.x - Math.sin(orbitSmooth.theta) * Math.cos(lookPitch),
         camera.position.y + Math.sin(lookPitch),
@@ -2517,14 +2666,17 @@
       );
     } else if (playerActive && thirdPerson) {
       // Vue 3e personne : orbite classique (souris → thêta/phi) mais
-      // centrée sur le bonhomme au lieu de l'origine/un bâtiment.
+      // centrée sur le bonhomme (ou la voiture qu'il conduit) au lieu de
+      // l'origine/un bâtiment.
+      const targetPos = drivingCar ? drivingCar.group.position : player.position;
+      const followRadius = drivingCar ? 11 : PLAYER_RADIUS;
       const targetPhi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi));
       orbitSmooth.phi    += (targetPhi     - orbitSmooth.phi)    * FOCUS_LERP;
-      orbitSmooth.radius += (PLAYER_RADIUS - orbitSmooth.radius) * FOCUS_LERP;
-      camera.position.x = player.position.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
+      orbitSmooth.radius += (followRadius  - orbitSmooth.radius) * FOCUS_LERP;
+      camera.position.x = targetPos.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
       camera.position.y = 0.9 + orbitSmooth.radius * Math.cos(orbitSmooth.phi);
-      camera.position.z = player.position.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
-      camera.lookAt(player.position.x, 0.9, player.position.z);
+      camera.position.z = targetPos.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
+      camera.lookAt(targetPos.x, 0.9, targetPos.z);
     } else {
       // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
       const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55 + zoomOffset;
