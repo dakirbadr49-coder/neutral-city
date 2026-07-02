@@ -235,11 +235,6 @@ tailwind.config = {
         <div class="space-y-1">
           <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
                          font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
-                  data-job="C++" data-label="C++">
-            <span class="text-base">C++</span><span>C++</span>
-          </button>
-          <button class="nav-btn-idle w-full flex items-center gap-3 px-3 py-2.5
-                         font-mono text-[11px] uppercase tracking-widest transition-all duration-200"
                   data-job="Docker" data-label="Docker">
             <span class="text-base">DK</span><span>Docker</span>
           </button>
@@ -301,6 +296,27 @@ tailwind.config = {
       </div>
     </div>
 
+    <!-- Ville (simulation jouable) -->
+    <div class="glass-panel p-4 rounded-xl relative overflow-hidden" id="sim-panel">
+      <div class="scanning-line" style="animation-delay:-1s;"></div>
+      <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Ville_Statut</h4>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1.5 font-mono text-[10px] text-[#b9cacb] mb-3">
+        <div class="flex justify-between"><span>$</span><span class="text-[#00f0ff]" id="sim-money">—</span></div>
+        <div class="flex justify-between"><span>POP</span><span class="text-[#dbfcff]" id="sim-population">—</span></div>
+        <div class="flex justify-between"><span>SAT</span><span class="text-green-400" id="sim-satisfaction">—</span></div>
+        <div class="flex justify-between"><span>POL</span><span class="text-[#ff44cc]" id="sim-pollution">—</span></div>
+        <div class="flex justify-between"><span>NRG</span><span class="text-[#00f0ff]" id="sim-energy">—</span></div>
+        <div class="flex justify-between"><span>H2O</span><span class="text-[#44ccff]" id="sim-water">—</span></div>
+      </div>
+      <button id="sim-build-toggle"
+              class="w-full py-2 bg-[#00f0ff]/10 border border-[#00f0ff]/30 text-[#00f0ff]
+                     font-mono text-[10px] uppercase tracking-widest rounded-lg
+                     hover:bg-[#00f0ff]/20 transition-colors">
+        ▸ Construire
+      </button>
+      <div id="sim-build-menu" class="hidden mt-3 space-y-1.5"></div>
+    </div>
+
     <!-- Sélection active -->
     <div class="glass-panel p-4 rounded-xl" id="selection-panel">
       <h4 class="font-mono text-[10px] tracking-widest text-[#00f0ff] mb-3 uppercase">Secteur_Actif</h4>
@@ -333,7 +349,7 @@ tailwind.config = {
                  flex items-center justify-between px-3 md:px-8 z-50 pointer-events-auto overflow-hidden">
     <div class="flex items-center gap-3 md:gap-6">
       <div class="flex items-center gap-2">
-        <div class="w-2 h-2 rounded-full bg-green-400 hud-pulse"></div>
+        <div class="w-2 h-2 rounded-full bg-green-400"></div>
         <span class="font-mono text-[9px] text-[#849495] tracking-widest">SYSTEM_ONLINE_0X88</span>
       </div>
       <span class="hidden sm:inline font-mono text-[9px] text-[#849495] tracking-wider">LOC: 48.8566°N 2.3522°E</span>

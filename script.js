@@ -22,12 +22,150 @@
     { name: "Node.js",     color: 0x3c873a, sub: "Secteur Backend",   count: "2,410", trend: "↑ +16%", zone: "Zone Delta",   icon: "ND",  zoneId: "backend" },
     { name: "Python",      color: 0x3776ab, sub: "Secteur Data/IA",   count: "4,580", trend: "↑ +24%", zone: "Zone Beta",    icon: "PY",  zoneId: "data"    },
     { name: "SQL",         color: 0x4479a1, sub: "Secteur Data",      count: "2,847", trend: "↑ +12%", zone: "Zone Beta",    icon: "DB",  zoneId: "data"    },
-    { name: "C++",         color: 0x00599c, sub: "Secteur Système",   count: "1,450", trend: "↑ +7%",  zone: "Zone Gamma",   icon: "C++", zoneId: "systeme" },
     { name: "Docker",      color: 0x2496ed, sub: "Secteur Système",   count: "1,680", trend: "↑ +14%", zone: "Zone Gamma",   icon: "DK",  zoneId: "systeme" },
   ];
 
   const JOBS_BY_ZONE = {};
   Object.keys(ZONES).forEach(zid => { JOBS_BY_ZONE[zid] = JOBS.filter(j => j.zoneId === zid); });
+
+  /* ── Simulation de ville jouable ──
+     État séparé de JOBS/la grille tech (qui reste 100% portfolio, jamais
+     touchée par la simulation). Argent, population, satisfaction,
+     pollution, énergie/eau, persistés en localStorage. */
+  const SIM_VERSION = 1;
+  const SIM_STORAGE_KEY = 'neuralCitySim.v1';
+  const SIM_TICK_MS = 2000;
+
+  const SIM_BUILDING_TYPES = {
+    residential: { label: 'Résidentiel',      cost: 400,  color: 0x8fd0f0, population: 40, jobsMoney: 0,  energyUse: 8,  waterUse: 6,  energySupply: 0,  waterSupply: 0,  pollution: 2,   satisfactionBase: 0,  upkeep: 5  },
+    commercial:  { label: 'Commercial',       cost: 600,  color: 0xffe27a, population: 0,  jobsMoney: 25, energyUse: 10, waterUse: 4,  energySupply: 0,  waterSupply: 0,  pollution: 4,   satisfactionBase: 2,  upkeep: 8  },
+    industrial:  { label: 'Industriel',       cost: 800,  color: 0xff8a44, population: 0,  jobsMoney: 60, energyUse: 18, waterUse: 10, energySupply: 0,  waterSupply: 0,  pollution: 14,  satisfactionBase: -4, upkeep: 12 },
+    power:       { label: 'Centrale Énergie', cost: 1200, color: 0x00f0ff, population: 0,  jobsMoney: 0,  energyUse: 0,  waterUse: 2,  energySupply: 60, waterSupply: 0,  pollution: 10,  satisfactionBase: -2, upkeep: 20 },
+    water:       { label: "Station d'Eau",    cost: 900,  color: 0x44ccff, population: 0,  jobsMoney: 0,  energyUse: 6,  waterUse: 0,  energySupply: 0,  waterSupply: 50, pollution: 1,   satisfactionBase: 1,  upkeep: 15 },
+    park:        { label: 'Parc',             cost: 300,  color: 0x0f3d24, population: 0,  jobsMoney: 0,  energyUse: 0,  waterUse: 3,  energySupply: 0,  waterSupply: 0,  pollution: -6,  satisfactionBase: 6,  upkeep: 3  },
+  };
+
+  function defaultSimState() {
+    return {
+      version: SIM_VERSION,
+      money: 5000, population: 0, satisfaction: 70, pollution: 0,
+      energyCap: 0, energyUse: 0, waterCap: 0, waterUse: 0,
+      lastTickAt: Date.now(),
+      buildings: [], // [{ id, type, lotId, x, z, builtAt }]
+      nextBuildingId: 1,
+    };
+  }
+
+  function loadSim() {
+    try {
+      const raw = localStorage.getItem(SIM_STORAGE_KEY);
+      if (!raw) return defaultSimState();
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== SIM_VERSION || !Array.isArray(parsed.buildings)) {
+        return defaultSimState();
+      }
+      const numeric = ['money', 'population', 'satisfaction', 'pollution', 'energyCap', 'energyUse', 'waterCap', 'waterUse', 'lastTickAt', 'nextBuildingId'];
+      if (numeric.some(k => !Number.isFinite(parsed[k]))) return defaultSimState();
+      parsed.satisfaction = Math.min(100, Math.max(0, parsed.satisfaction));
+      parsed.pollution = Math.min(100, Math.max(0, parsed.pollution));
+      return parsed;
+    } catch (e) {
+      return defaultSimState();
+    }
+  }
+
+  function saveSim() {
+    try {
+      localStorage.setItem(SIM_STORAGE_KEY, JSON.stringify(sim));
+    } catch (e) {
+      // quota dépassée / navigation privée : la simulation continue,
+      // simplement sans persistance pour cette session.
+    }
+  }
+
+  let sim = loadSim();
+  let simTickCount = 0;
+
+  // Recalcule les agrégats (population/énergie/eau/pollution cible/argent)
+  // depuis sim.buildings — fonction pure, appelée par runSimTick().
+  function computeSimAggregates() {
+    let population = 0, energyCap = 0, energyUse = 0, waterCap = 0, waterUse = 0;
+    let pollutionSum = 0, satisfactionSum = 0, incomeMoney = 0, upkeepMoney = 0;
+    sim.buildings.forEach(b => {
+      const t = SIM_BUILDING_TYPES[b.type];
+      if (!t) return;
+      population += t.population || 0;
+      energyCap += t.energySupply || 0;
+      energyUse += t.energyUse || 0;
+      waterCap += t.waterSupply || 0;
+      waterUse += t.waterUse || 0;
+      pollutionSum += t.pollution || 0;
+      satisfactionSum += t.satisfactionBase || 0;
+      incomeMoney += t.jobsMoney || 0;
+      upkeepMoney += t.upkeep || 0;
+    });
+    return { population, energyCap, energyUse, waterCap, waterUse, pollutionSum, satisfactionSum, incomeMoney, upkeepMoney };
+  }
+
+  function runSimTick() {
+    const agg = computeSimAggregates();
+    sim.population = agg.population;
+    sim.energyCap = agg.energyCap;
+    sim.energyUse = agg.energyUse;
+    sim.waterCap = agg.waterCap;
+    sim.waterUse = agg.waterUse;
+
+    const energyDeficitRatio = Math.max(0, agg.energyUse - agg.energyCap) / Math.max(1, agg.energyUse);
+    const waterDeficitRatio = Math.max(0, agg.waterUse - agg.waterCap) / Math.max(1, agg.waterUse);
+
+    const pollutionTarget = Math.min(100, Math.max(0, agg.pollutionSum));
+    sim.pollution += (pollutionTarget - sim.pollution) * 0.15;
+
+    const satisfactionTarget = Math.min(100, Math.max(0,
+      60 + agg.satisfactionSum - sim.pollution * 0.4
+      - energyDeficitRatio * 30 - waterDeficitRatio * 30
+      + Math.min(10, sim.population * 0.02)
+    ));
+    sim.satisfaction += (satisfactionTarget - sim.satisfaction) * 0.1;
+
+    const satisfactionFactor = 0.5 + sim.satisfaction / 100;
+    const income = agg.incomeMoney * satisfactionFactor;
+    sim.money = Math.max(0, sim.money + income - agg.upkeepMoney);
+
+    sim.lastTickAt = Date.now();
+    updateSimUI();
+
+    simTickCount++;
+    if (simTickCount % 5 === 0) saveSim();
+  }
+
+  // Rattrapage hors-ligne : rejoue les ticks manqués depuis la dernière
+  // visite (plafonné pour ne pas laisser filer les stats après plusieurs
+  // jours d'absence), avant le premier rendu visible.
+  (function catchUpOfflineTicks() {
+    const elapsed = Date.now() - sim.lastTickAt;
+    const missedTicks = Math.min(240, Math.floor(elapsed / SIM_TICK_MS));
+    for (let i = 0; i < missedTicks; i++) runSimTick();
+  })();
+  updateSimUI(); // reflète l'état chargé même si aucun tick n'a été rattrapé
+  setInterval(runSimTick, SIM_TICK_MS);
+
+  function formatSimNumber(n) {
+    return Math.floor(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function updateSimUI() {
+    const moneyEl = document.getElementById('sim-money');
+    if (!moneyEl) return; // panneau pas encore dans le DOM au tout premier appel
+    moneyEl.textContent = formatSimNumber(sim.money);
+    document.getElementById('sim-population').textContent = formatSimNumber(sim.population);
+    document.getElementById('sim-satisfaction').textContent = Math.round(sim.satisfaction) + '%';
+    document.getElementById('sim-pollution').textContent = Math.round(sim.pollution) + '%';
+    document.getElementById('sim-energy').textContent = formatSimNumber(sim.energyUse) + '/' + formatSimNumber(sim.energyCap);
+    document.getElementById('sim-water').textContent = formatSimNumber(sim.waterUse) + '/' + formatSimNumber(sim.waterCap);
+  }
+
+  window.addEventListener('beforeunload', saveSim);
 
   // Quadrant → zone : Web (x>0,z>0) / Backend (x<0,z>0) / Data (x<0,z<0) / Système (x>0,z<0)
   function zoneIdForPosition(x, z) {
@@ -118,19 +256,132 @@
      Pas de GridHelper holographique ici : avec le vrai réseau de routes,
      trottoirs et marquages déjà modélisés plus bas, une grille en plus
      par-dessus tout ne faisait qu'ajouter un quadrillage façon papier
-     millimétré sur toute la ville. */
+     millimétré sur toute la ville.
+     Le sol est composé de 4 bandes (au lieu d'un seul grand plan) pour
+     laisser un trou rectangulaire ouvert au-dessus d'un vrai parking
+     souterrain — un niveau -1 qu'on découvre en regardant vers le bas,
+     pas juste une texture peinte sur le sol. */
+  const PIT_X = -8, PIT_Z = -26, PIT_W = 10, PIT_D = 8, PIT_DEPTH = 3;
+  const pitXMin = PIT_X - PIT_W / 2, pitXMax = PIT_X + PIT_W / 2;
+  const pitZMin = PIT_Z - PIT_D / 2, pitZMax = PIT_Z + PIT_D / 2;
 
-  // Plan sol — volontairement énorme (bien au-delà de ce que le brouillard
-  // laisse voir) pour qu'on ne tombe jamais sur un bord visible : la ville
-  // doit sembler infinie, pas s'arrêter net.
-  const groundGeo = new THREE.PlaneGeometry(6000, 6000);
   const groundMat = new THREE.MeshStandardMaterial({
     color: 0x0a1020, roughness: 0.9, metalness: 0.1
   });
-  const ground = new THREE.Mesh(groundGeo, groundMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
+  // Volontairement énorme (bien au-delà de ce que le brouillard laisse
+  // voir) pour qu'on ne tombe jamais sur un bord visible : la ville doit
+  // sembler infinie, pas s'arrêter net.
+  const FAR = 3000;
+  function addGroundStrip(x, z, w, d) {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), groundMat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0, z);
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+  }
+  // Bandes sud/nord : toute la largeur, sur ce qui reste de profondeur
+  // une fois le trou retiré.
+  addGroundStrip(0, (-FAR + pitZMin) / 2, FAR * 2, pitZMin + FAR);
+  addGroundStrip(0, (pitZMax + FAR) / 2, FAR * 2, FAR - pitZMax);
+  // Bandes ouest/est : seulement sur la profondeur du trou, de part et
+  // d'autre de celui-ci.
+  addGroundStrip((-FAR + pitXMin) / 2, PIT_Z, pitXMin + FAR, PIT_D);
+  addGroundStrip((pitXMax + FAR) / 2, PIT_Z, FAR - pitXMax, PIT_D);
+
+  /* ── Parking souterrain ──
+     Vrai volume sous le trou (piliers, murs, néons de bordure, quelques
+     véhicules garés) — visible en regardant dans l'ouverture, pas un
+     simple décor plaqué au sol. */
+  function createUndergroundLevel() {
+    const wallMat  = new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.85, metalness: 0.15 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0a1220, roughness: 0.9, metalness: 0.1 });
+    const trimMat  = new THREE.MeshBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.8 });
+    const rimMat   = new THREE.MeshBasicMaterial({
+      color: 0x00f0ff, transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(PIT_W, PIT_D), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(PIT_X, -PIT_DEPTH, PIT_Z);
+    scene.add(floor);
+
+    // Murs + liseré néon à leur base
+    const wallGeoNS  = new THREE.BoxGeometry(PIT_W + 0.3, PIT_DEPTH, 0.3);
+    const wallGeoEW  = new THREE.BoxGeometry(0.3, PIT_DEPTH, PIT_D + 0.3);
+    const trimGeoNS  = new THREE.BoxGeometry(PIT_W + 0.3, 0.1, 0.34);
+    const trimGeoEW  = new THREE.BoxGeometry(0.34, 0.1, PIT_D + 0.3);
+    [pitZMin, pitZMax].forEach(z => {
+      const wall = new THREE.Mesh(wallGeoNS, wallMat);
+      wall.position.set(PIT_X, -PIT_DEPTH / 2, z);
+      scene.add(wall);
+      const trim = new THREE.Mesh(trimGeoNS, trimMat);
+      trim.position.set(PIT_X, -PIT_DEPTH + 0.1, z);
+      scene.add(trim);
+    });
+    [pitXMin, pitXMax].forEach(x => {
+      const wall = new THREE.Mesh(wallGeoEW, wallMat);
+      wall.position.set(x, -PIT_DEPTH / 2, PIT_Z);
+      scene.add(wall);
+      const trim = new THREE.Mesh(trimGeoEW, trimMat);
+      trim.position.set(x, -PIT_DEPTH + 0.1, PIT_Z);
+      scene.add(trim);
+    });
+
+    // Liseré lumineux au ras du sol, tout autour de l'ouverture — pour
+    // bien repérer le trou en la survolant de haut
+    [[PIT_X, pitZMin, PIT_W + 0.4, 0.12], [PIT_X, pitZMax, PIT_W + 0.4, 0.12]].forEach(([x, z, w, d]) => {
+      const rim = new THREE.Mesh(new THREE.PlaneGeometry(w, d), rimMat);
+      rim.rotation.x = -Math.PI / 2;
+      rim.position.set(x, 0.05, z);
+      scene.add(rim);
+    });
+    [[pitXMin, PIT_Z, 0.12, PIT_D + 0.4], [pitXMax, PIT_Z, 0.12, PIT_D + 0.4]].forEach(([x, z, w, d]) => {
+      const rim = new THREE.Mesh(new THREE.PlaneGeometry(w, d), rimMat);
+      rim.rotation.x = -Math.PI / 2;
+      rim.position.set(x, 0.05, z);
+      scene.add(rim);
+    });
+
+    // Piliers intérieurs, avec un capuchon lumineux
+    const pillarMat = new THREE.MeshStandardMaterial({ color: 0x2e3447, roughness: 0.6, metalness: 0.4 });
+    const pillarGeo = new THREE.CylinderGeometry(0.18, 0.18, PIT_DEPTH, 8);
+    const capMat = new THREE.MeshStandardMaterial({ color: 0xff44cc, emissive: 0xff44cc, emissiveIntensity: 1 });
+    [[-2.3, -1.6], [2.3, 1.6]].forEach(([dx, dz]) => {
+      const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+      pillar.position.set(PIT_X + dx, -PIT_DEPTH / 2, PIT_Z + dz);
+      scene.add(pillar);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), capMat);
+      cap.position.set(PIT_X + dx, -0.15, PIT_Z + dz);
+      scene.add(cap);
+    });
+
+    // Véhicules garés (silhouettes simples, bande émissive façon phares)
+    const carBodyMat = new THREE.MeshStandardMaterial({ color: 0x151b2d, roughness: 0.5, metalness: 0.5 });
+    const carGlowMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 1 });
+    [[-3, -2.4], [-3, 1.6]].forEach(([dx, dz]) => {
+      const car = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.5, 0.8), carBodyMat);
+      body.position.y = 0.25;
+      car.add(body);
+      const glow = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.15, 0.75), carGlowMat);
+      glow.position.set(0.85, 0.3, 0);
+      car.add(glow);
+      car.position.set(PIT_X + dx, -PIT_DEPTH, PIT_Z + dz);
+      scene.add(car);
+    });
+
+    // Enseigne peinte au sol, visible depuis le dessus à travers l'ouverture
+    const signTex = makeSignTexture('NIVEAU_-1', '#00f0ff');
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.6, 0.65),
+      new THREE.MeshBasicMaterial({ map: signTex, transparent: true })
+    );
+    sign.rotation.x = -Math.PI / 2;
+    sign.position.set(PIT_X, -PIT_DEPTH + 0.02, PIT_Z);
+    scene.add(sign);
+  }
+  createUndergroundLevel();
 
   /* Routes — réseau complet aligné sur la grille de bâtiments */
   const roadMat = new THREE.MeshStandardMaterial({
@@ -376,15 +627,19 @@
 
   /* Quelques tours emblématiques (skyline en bordure), une par zone —
      on garde une référence vers la plus haute de chaque zone pour y
-     accrocher la pub façon "grand panneau publicitaire" */
-  const towerWeb      = createBuilding(22, 0,   randomJobForPosition(22, 0),   18);
-  createBuilding(22, 4.6, randomJobForPosition(22, 4.6), 16);
-  createBuilding(-22, 0,  randomJobForPosition(-22, 0),  16);
-  const towerBackend  = createBuilding(-22, 4.6,randomJobForPosition(-22, 4.6),20);
-  createBuilding(-22, -4.6,randomJobForPosition(-22, -4.6),14);
-  const towerData      = createBuilding(-22, -9.2,randomJobForPosition(-22, -9.2),15);
-  const towerSysteme   = createBuilding(22, -4.6, randomJobForPosition(22, -4.6), 17);
-  createBuilding(22, -9.2, randomJobForPosition(22, -9.2), 13);
+     accrocher la pub façon "grand panneau publicitaire".
+     x=±23 (au lieu de ±22) : ça aligne ces tours sur la même grille STEP=4.6
+     que le reste de la ville (colonne juste après ±18.4) au lieu de flotter
+     entre deux colonnes. z=9.2 (au lieu de 0) pour towerWeb et sa jumelle
+     Backend : elles étaient plantées en plein milieu de l'avenue centrale. */
+  const towerWeb      = createBuilding(23, 9.2, randomJobForPosition(23, 9.2), 18);
+  createBuilding(23, 4.6, randomJobForPosition(23, 4.6), 16);
+  createBuilding(-23, 9.2, randomJobForPosition(-23, 9.2), 16);
+  const towerBackend  = createBuilding(-23, 4.6,randomJobForPosition(-23, 4.6),20);
+  createBuilding(-23, -4.6,randomJobForPosition(-23, -4.6),14);
+  const towerData      = createBuilding(-23, -9.2,randomJobForPosition(-23, -9.2),15);
+  const towerSysteme   = createBuilding(23, -4.6, randomJobForPosition(23, -4.6), 17);
+  createBuilding(23, -9.2, randomJobForPosition(23, -9.2), 13);
 
   /* ── Habillage visuel des 4 zones : une petite balise lumineuse
      (pas de grand cercle au sol) + un panneau publicitaire géant accroché
@@ -458,10 +713,10 @@
   addZoneBeacon(-15, 15,  ZONES.backend.color);
   addZoneBeacon(-15, -15, ZONES.data.color);
   addZoneBeacon(15, -15,  ZONES.systeme.color);
-  attachZoneAd(22, 0,    18, "SECTEUR WEB",     "JS · TS · REACT · JQUERY", ZONES.web.color,     -Math.PI / 2);
-  attachZoneAd(-22, 4.6, 20, "SECTEUR BACKEND", "PHP · JAVA · NODE.JS",     ZONES.backend.color,  Math.PI / 2);
-  attachZoneAd(-22, -9.2, 15, "SECTEUR DATA",   "PYTHON · SQL",             ZONES.data.color,     Math.PI / 2);
-  attachZoneAd(22, -4.6, 17, "SECTEUR SYSTÈME", "C++ · DOCKER",             ZONES.systeme.color, -Math.PI / 2);
+  attachZoneAd(23, 9.2,   18, "SECTEUR WEB",     "JS · TS · REACT · JQUERY", ZONES.web.color,     -Math.PI / 2);
+  attachZoneAd(-23, 4.6,  20, "SECTEUR BACKEND", "PHP · JAVA · NODE.JS",     ZONES.backend.color,  Math.PI / 2);
+  attachZoneAd(-23, -9.2, 15, "SECTEUR DATA",   "PYTHON · SQL",             ZONES.data.color,     Math.PI / 2);
+  attachZoneAd(23, -4.6,  17, "SECTEUR SYSTÈME", "DOCKER",                   ZONES.systeme.color, -Math.PI / 2);
 
 
   /* ── Magasins de rue (petits commerces avec enseigne néon) ── */
@@ -561,9 +816,15 @@
   // (deux anneaux : ±16 et ±32) pour que la ville se sente plus vivante,
   // sans toucher à la grille dense du centre (risque de collision + perf)
   const shopSpots = [];
-  [17.9, 33.9].forEach(offset => {
+  // Le "k" qui court le long de l'anneau finit forcément par croiser les
+  // avenues perpendiculaires (0, ±16, ±32, ±44) — sans cette exclusion,
+  // un magasin (largeur 2.0) planté juste à ce croisement chevauche
+  // carrément la route (déjà vu avec ARCADE/NOODLE_BAR).
+  const CROSS_AVENUES = [0, 16, -16, 32, -32, 44, -44];
+  [18.3, 34.3].forEach(offset => {
     for (let k = -38; k <= 38; k += 4.3) {
       if (Math.abs(k) < 3) continue;
+      if (CROSS_AVENUES.some(a => Math.abs(k - a) < 2.9)) continue;
       shopSpots.push({ x: k, z: offset,  ry: Math.PI });
       shopSpots.push({ x: k, z: -offset, ry: 0 });
       shopSpots.push({ x: offset,  z: k, ry: -Math.PI / 2 });
@@ -756,17 +1017,20 @@
   createMetroTrack(-26, 38, 22, 38);
 
   /* ── Stade e-sport ── */
+  // Rayon réduit pour tenir dans le couloir entre les avenues ±32 et ±44
+  // (le stade original débordait des deux côtés — son diamètre dépassait
+  // l'espace disponible entre les deux routes qui l'encadrent).
   function createStadium(x, z) {
     const group = new THREE.Group();
     const wall = new THREE.Mesh(
-      new THREE.CylinderGeometry(5, 5.6, 2.6, 24, 1, true),
+      new THREE.CylinderGeometry(4, 4.5, 2.6, 24, 1, true),
       new THREE.MeshStandardMaterial({ color: 0x14203a, roughness: 0.7, side: THREE.DoubleSide })
     );
     wall.position.y = 1.3;
     group.add(wall);
 
     const roof = new THREE.Mesh(
-      new THREE.RingGeometry(3.2, 5.8, 24),
+      new THREE.RingGeometry(2.6, 4.65, 24),
       new THREE.MeshStandardMaterial({ color: 0x0d1424, roughness: 0.6, side: THREE.DoubleSide })
     );
     roof.rotation.x = -Math.PI / 2;
@@ -774,13 +1038,13 @@
     group.add(roof);
 
     const screenTex = makeSignTexture('ESPORT_ARENA', '#ff44cc');
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(4, 1), new THREE.MeshBasicMaterial({ map: screenTex, transparent: true }));
-    screen.position.set(0, 2, 5.3);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.8), new THREE.MeshBasicMaterial({ map: screenTex, transparent: true }));
+    screen.position.set(0, 2, 4.25);
     group.add(screen);
 
     // Fine bande lumineuse à la base (accent néon du stade, pas un halo de zone)
     const baseRing = new THREE.Mesh(
-      new THREE.RingGeometry(5.5, 5.65, 24),
+      new THREE.RingGeometry(4.4, 4.53, 24),
       new THREE.MeshBasicMaterial({ color: 0xff44cc, transparent: true, opacity: 0.6, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false })
     );
     baseRing.rotation.x = -Math.PI / 2;
@@ -882,30 +1146,6 @@
   }
   scene.add(mountainGroup);
 
-  /* ── Monument central (rond-point au croisement des avenues) ── */
-  let monumentGroup = null;
-  function createMonument() {
-    const group = new THREE.Group();
-    [[0x00f0ff, 0], [0x00f0ff, 1], [0xff44cc, 2]].forEach(([c, i]) => {
-      const torus = new THREE.Mesh(
-        new THREE.TorusGeometry(1.1 - i * 0.25, 0.05, 8, 32),
-        new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 })
-      );
-      torus.position.y = 3 + i * 1.1;
-      torus.rotation.x = Math.PI / 2 + i * 0.3;
-      group.add(torus);
-    });
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.3, 1.5, 0.6, 16),
-      new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.7 })
-    );
-    base.position.y = 0.3;
-    group.add(base);
-    group.position.set(0, 0, 0);
-    scene.add(group);
-    monumentGroup = group;
-  }
-  createMonument();
 
   /* ── Particules atmosphériques ── */
   const PARTICLE_COUNT = 350;
@@ -988,7 +1228,14 @@
     });
   }
 
-  /* ── Orbite caméra pilotée par la souris ── */
+  /* ── Orbite caméra ──
+     Navigation normale : le survol de la souris pilote l'angle, comme
+     avant — ça n'entre jamais en conflit avec le scroll de la page qui
+     fait apparaître les sections.
+     Mode "Vue ville" (bouton œil, UI masquée) : en plus du survol, on
+     active molette = zoom et clic-glisser = rotation libre. On ne les
+     branche que dans ce mode pour ne jamais capter le scroll normal du
+     site ailleurs. ── */
   const orbit = {
     theta: Math.PI / 4,
     phi:   0.95,
@@ -997,20 +1244,58 @@
   const DEFAULT_RADIUS = 44;
   const orbitSmooth = { theta: orbit.theta, phi: orbit.phi, radius: orbit.radius };
   const THETA_RANGE = Math.PI * 2.0;
-  const PHI_RANGE   = Math.PI * 0.55;
+  // PHI_MAX s'arrête juste avant π/2 (l'horizontale pure) : au-delà,
+  // camera.y = radius·cos(phi) devient négatif et on passe sous le sol,
+  // ce qui casse le rendu (vu depuis fix précédent). 1.55 laisse une vue
+  // quasi au niveau de la rue tout en restant toujours au-dessus.
+  const PHI_MIN = 0.15, PHI_MAX = 1.55;
+  const PHI_BASE = 0.35;
+  // Calibré pour que le bas de l'écran (souris tout en bas) corresponde
+  // pile à PHI_MAX, au lieu de plafonner déjà aux deux tiers de l'écran
+  // et de rester "collé" en bas sans réaction pour le dernier tiers.
+  const PHI_RANGE = PHI_MAX - PHI_BASE;
+
+  function isCityOnlyView() { return document.body.classList.contains('city-only-view'); }
 
   // Point regardé par la caméra (glisse vers un bâtiment quand on "voyage" vers lui)
   const focusTarget       = new THREE.Vector3(0, 2, 0);
   const focusTargetSmooth = new THREE.Vector3(0, 2, 0);
   let focused = false; // tant que true, la souris ne pilote plus l'angle
+  let zoomOffset = 0;   // molette / pincement — seulement actif en "Vue ville"
+  let dragging = false;
+  let lastPointer = { x: 0, y: 0 };
 
   window.addEventListener('mousemove', (e) => {
+    if (dragging) {
+      const dx = e.clientX - lastPointer.x, dy = e.clientY - lastPointer.y;
+      lastPointer = { x: e.clientX, y: e.clientY };
+      orbit.theta -= dx * 0.006;
+      orbit.phi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi - dy * 0.006));
+      return;
+    }
     if (focused) return;
     const nx = e.clientX / window.innerWidth;
     const ny = e.clientY / window.innerHeight;
     orbit.theta = nx * THETA_RANGE;
-    orbit.phi   = 0.35 + ny * PHI_RANGE;
+    // Plafonné à PHI_MAX : au-delà, la caméra passerait sous l'horizon et
+    // se retrouverait à regarder la ville par en dessous (rendu cassé,
+    // le sol/les bâtiments n'ont pas de face visible de ce côté-là).
+    orbit.phi   = Math.min(PHI_MAX, PHI_BASE + ny * PHI_RANGE);
   });
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (!isCityOnlyView()) return;
+    dragging = true;
+    lastPointer = { x: e.clientX, y: e.clientY };
+    if (focused) unfocus();
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+
+  canvas.addEventListener('wheel', (e) => {
+    if (!isCityOnlyView()) return;
+    e.preventDefault();
+    zoomOffset = Math.min(70, Math.max(-25, zoomOffset + e.deltaY * 0.05));
+  }, { passive: false });
 
   /* ── Raycasting (hover + click) ── */
   const raycaster = new THREE.Raycaster();
@@ -1060,14 +1345,14 @@
         if (hoveredBuilding && hoveredBuilding !== selectedBuilding) resetHighlight(hoveredBuilding);
         hoveredBuilding = grp;
         highlightBuilding(grp, 0.25);
-        canvas.style.cursor = 'pointer';
+        canvas.classList.add('hovering');
       }
       setTooltip(grp, e.clientX, e.clientY);
     } else {
       if (hoveredBuilding && hoveredBuilding !== selectedBuilding) resetHighlight(hoveredBuilding);
       hoveredBuilding = null;
       tooltip.style.display = 'none';
-      canvas.style.cursor = 'default';
+      canvas.classList.remove('hovering');
     }
   });
 
@@ -1256,7 +1541,7 @@
     const LERP = 0.02;
     const FOCUS_LERP = 0.035;
     // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
-    const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55;
+    const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55 + zoomOffset;
     const scrollPhiTarget    = focused ? orbit.phi    : Math.max(0.2, orbit.phi - scrollZoom * 0.35);
     // Lerp angulaire (gestion du wrap 0/2π pour éviter le saut)
     let dt = orbit.theta - orbitSmooth.theta;
@@ -1296,9 +1581,6 @@
       tr.mesh.position.x = tr.centerX + s * tr.rangeX;
       tr.mesh.position.z = tr.centerZ + s * tr.rangeZ;
     });
-
-    // Rotation lente du monument central
-    if (monumentGroup) monumentGroup.rotation.y += 0.003;
 
     // Mini-carte (canvas 2D, une frame sur 4 seulement — inutile de la
     // redessiner à 60fps pour un simple point qui bouge doucement)
@@ -1456,21 +1738,57 @@
     });
   }
 
-  /* ── Support tactile : tap sur un bâtiment = sélection ──
-     (le drag/scroll normal du doigt n'est jamais bloqué : écouteurs "passive") */
+  /* ── Support tactile : tap sur un bâtiment = sélection (partout).
+     En mode "Vue ville" en plus : un doigt qui glisse fait tourner la
+     caméra, deux doigts qui pincent zooment. Ces gestes ne sont jamais
+     actifs en navigation normale, pour ne jamais bloquer le scroll
+     tactile qui fait apparaître les sections. ── */
   let touchStart = null;
+  let touchMoved = false;
+  let pinchStartDist = null;
+  function touchDist(t0, t1) {
+    return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+  }
+
   canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      pinchStartDist = touchDist(e.touches[0], e.touches[1]);
+      touchStart = null;
+      return;
+    }
     const t = e.changedTouches[0];
     touchStart = { x: t.clientX, y: t.clientY };
+    touchMoved = false;
+    if (isCityOnlyView() && focused) unfocus();
   }, { passive: true });
 
+  canvas.addEventListener('touchmove', (e) => {
+    if (!isCityOnlyView()) return;
+    if (e.touches.length === 2 && pinchStartDist) {
+      e.preventDefault();
+      const dist = touchDist(e.touches[0], e.touches[1]);
+      zoomOffset = Math.min(70, Math.max(-25, zoomOffset - (dist - pinchStartDist) * 0.08));
+      pinchStartDist = dist;
+      return;
+    }
+    if (!touchStart || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+    if (Math.hypot(dx, dy) > 4) touchMoved = true;
+    e.preventDefault();
+    orbit.theta -= dx * 0.006;
+    orbit.phi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi - dy * 0.006));
+    touchStart = { x: t.clientX, y: t.clientY };
+  }, { passive: false });
+
   canvas.addEventListener('touchend', (e) => {
+    pinchStartDist = null;
     if (!touchStart) return;
     if (document.body.classList.contains('hud-hidden')) { touchStart = null; return; }
     const t = e.changedTouches[0];
-    const moved = Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y);
+    const moved = touchMoved || Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) > 12;
     touchStart = null;
-    if (moved > 12) return; // c'était un scroll, pas un tap
+    if (moved) return; // c'était un glissé (scroll ou rotation), pas un tap
 
     mouse.x =  (t.clientX / window.innerWidth)  * 2 - 1;
     mouse.y = -(t.clientY / window.innerHeight) * 2 + 1;
