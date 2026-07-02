@@ -2014,6 +2014,8 @@
   let playerActive = false; // devient vrai au clic sur "Explorer à pied" ou à la 1ère touche de marche
   let playerFacing = 0;
   let playerWalkPhase = 0;
+  let playerSpeedSmooth = 0; // vitesse lissée (inertie) — la caméra qui suit player.position en profite directement
+  let playerMoveDirX = 0, playerMoveDirZ = 0; // dernière direction de marche, réutilisée pendant la décélération
   let lookPitch = 0; // regard haut/bas en vue 1re personne (pas la même chose que orbit.phi)
   // Commence en 3e personne (visible) : en 1re personne par défaut, le
   // bonhomme n'apparaît jamais à l'écran (la caméra est "dedans"), ce qui
@@ -2065,6 +2067,7 @@
     player.visible = false;
     lookPitch = 0;
     playerLookX = 0;
+    playerSpeedSmooth = 0;
     focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant le mode piéton
     refreshWalkUI();
   }
@@ -2279,36 +2282,46 @@
     const moving  = Math.hypot(fInput, rInput) > 0.08;
     const running = !!walkKeys['shift'];
 
+    // Vitesse avec inertie (accélère vite, freine progressivement) au lieu
+    // de partir/s'arrêter net à chaque frappe — la caméra qui suit
+    // player.position hérite directement de ce lissage, donc plus besoin
+    // de la lisser séparément.
+    const targetSpeed = moving ? WALK_SPEED * (running ? 1.9 : 1) : 0;
+    playerSpeedSmooth += (targetSpeed - playerSpeedSmooth) * (moving ? 0.18 : 0.07);
+
     if (moving) {
       if (!playerActive) activatePlayer();
-      const speed = WALK_SPEED * (running ? 1.9 : 1);
       const fx = -Math.sin(orbit.theta), fz = -Math.cos(orbit.theta);
       const rx = -fz, rz = fx;
       const len = Math.max(1, Math.hypot(fInput, rInput)); // analogique : jamais amplifié, jamais > 1
-      const moveX = (fx * fInput + rx * rInput) / len;
-      const moveZ = (fz * fInput + rz * rInput) / len;
-      const solved = resolvePlayerCollisions(
-        focusTarget.x + moveX * speed,
-        focusTarget.z + moveZ * speed
-      );
-      focusTarget.x = solved.x;
-      focusTarget.z = solved.z;
+      playerMoveDirX = (fx * fInput + rx * rInput) / len; // dernière direction visée, réutilisée pendant la décélération
+      playerMoveDirZ = (fz * fInput + rz * rInput) / len;
 
       // Rotation lissée vers la direction de marche (plus de demi-tour sec)
-      const targetFacing = Math.atan2(moveX, moveZ);
+      const targetFacing = Math.atan2(playerMoveDirX, playerMoveDirZ);
       let dFace = targetFacing - playerFacing;
       if (dFace >  Math.PI) dFace -= Math.PI * 2;
       if (dFace < -Math.PI) dFace += Math.PI * 2;
       playerFacing += dFace * 0.22;
+    }
 
-      playerWalkPhase += running ? 0.36 : 0.25;
-      const amp = running ? 0.8 : 0.6;
+    if (playerSpeedSmooth > 0.002) {
+      const solved = resolvePlayerCollisions(
+        focusTarget.x + playerMoveDirX * playerSpeedSmooth,
+        focusTarget.z + playerMoveDirZ * playerSpeedSmooth
+      );
+      focusTarget.x = solved.x;
+      focusTarget.z = solved.z;
+
+      const walkFrac = Math.min(1, playerSpeedSmooth / (WALK_SPEED * (running ? 1.9 : 1)));
+      playerWalkPhase += (running ? 0.36 : 0.25) * walkFrac;
+      const amp = (running ? 0.8 : 0.6) * walkFrac;
       const swing = Math.sin(playerWalkPhase) * amp;
       playerLegL.rotation.x =  swing; playerLegR.rotation.x = -swing;
       playerArmL.rotation.x = -swing * 0.85; playerArmR.rotation.x =  swing * 0.85;
       // Rebond du corps + inclinaison vers l'avant (plus marquée en courant)
-      player.position.y = Math.abs(Math.sin(playerWalkPhase)) * (running ? 0.045 : 0.028);
-      playerTorso.rotation.x += ((running ? 0.16 : 0.08) - playerTorso.rotation.x) * 0.15;
+      player.position.y = Math.abs(Math.sin(playerWalkPhase)) * (running ? 0.045 : 0.028) * walkFrac;
+      playerTorso.rotation.x += ((running ? 0.16 : 0.08) * walkFrac - playerTorso.rotation.x) * 0.15;
       playerHead.rotation.x = playerTorso.rotation.x * 0.5;
     } else if (playerActive) {
       // Retour au repos (membres, inclinaison, rebond) + légère respiration
