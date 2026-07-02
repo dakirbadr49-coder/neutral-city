@@ -163,6 +163,12 @@
     document.getElementById('sim-pollution').textContent = Math.round(sim.pollution) + '%';
     document.getElementById('sim-energy').textContent = formatSimNumber(sim.energyUse) + '/' + formatSimNumber(sim.energyCap);
     document.getElementById('sim-water').textContent = formatSimNumber(sim.waterUse) + '/' + formatSimNumber(sim.waterCap);
+    // Le style "abordable/pas abordable" du menu de construction se
+    // rafraîchit uniquement depuis les points d'interaction (toggle,
+    // choix de type, pose d'un bâtiment) — pas ici : ce fichier définit
+    // buildMode/selectedBuildType/le menu bien plus bas, et le tout premier
+    // appel à updateSimUI() (rattrapage hors-ligne) arrive avant, donc les
+    // référencer ici planterait (TDZ) sur ce premier appel.
   }
 
   window.addEventListener('beforeunload', saveSim);
@@ -430,10 +436,18 @@
   }
 
   // Grandes avenues (axes principaux) — anneau extérieur ajouté pour
-  // les nouveaux quartiers (école, parcs) sans densifier le centre
+  // les nouveaux quartiers (école, parcs) sans densifier le centre.
+  // Seule l'avenue centrale (pos=0) franchit la rivière (via le pont,
+  // plus bas) : les autres avenues verticales s'arrêtent avant la rive
+  // sud (49) au lieu de continuer tout droit dans l'eau — un seul pont,
+  // pas une route immergée à chaque avenue.
   [0, 16, -16, 32, -32, 44, -44].forEach(pos => {
     addRoad(0, pos, 140, pos === 0 ? 2.4 : 1.4);
-    addRoad(pos, 0, pos === 0 ? 2.4 : 1.4, 140);
+    if (pos === 0) {
+      addRoad(0, 0, 2.4, 140);
+    } else {
+      addRoad(pos, -10.5, 1.4, 119); // z: -70 → 49 (s'arrête à la rive sud)
+    }
   });
   // Rues secondaires plus fines, une par rangée de bâtiments (STEP = 4.6)
   for (let k = -4; k <= 4; k++) {
@@ -442,17 +456,24 @@
     addRoad(0, p, 140, 0.55);
     addRoad(p, 0, 0.55, 140);
   }
-  // Trottoirs le long des grandes avenues
+  // Trottoirs le long des grandes avenues. Ceux qui longent les avenues
+  // NON centrales (nord-sud) sont raccourcis comme la route elle-même
+  // (s'arrêtent à 49, avant la rivière) : sinon ils continuaient à plat
+  // au-dessus de l'eau alors que la route en dessous s'était arrêtée.
   [16, -16, 32, -32, 44, -44].forEach(pos => {
     addSidewalk(0, pos + 1.05, 140, 0.55);
     addSidewalk(0, pos - 1.05, 140, 0.55);
-    addSidewalk(pos + 1.05, 0, 0.55, 140);
-    addSidewalk(pos - 1.05, 0, 0.55, 140);
+    addSidewalk(pos + 1.05, -10.5, 0.55, 119);
+    addSidewalk(pos - 1.05, -10.5, 0.55, 119);
   });
-  addSidewalk(0, 1.55, 140, 0.5);
-  addSidewalk(0, -1.55, 140, 0.5);
-  addSidewalk(1.55, 0, 0.5, 140);
-  addSidewalk(-1.55, 0, 0.5, 140);
+  // Trottoirs de l'avenue centrale : coupés en deux (sud -70→49, nord
+  // 59→70) au lieu d'un seul plan continu — le milieu (49→59) est la
+  // rivière, où c'est le pont/ses rampes qui prennent le relais, pas un
+  // trottoir à plat flottant au-dessus de l'eau.
+  [1.55, -1.55].forEach(x => {
+    addSidewalk(x, -10.5, 0.5, 119);
+    addSidewalk(x, 64.5, 0.5, 11);
+  });
 
   /* Marquage au sol : ligne centrale en pointillés sur les grandes avenues
      (des tirets espacés, comme un vrai marquage routier, au lieu d'un
@@ -462,10 +483,11 @@
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2
   });
   const DASH_LEN = 2, DASH_GAP = 2.6, DASH_SPAN = DASH_LEN + DASH_GAP;
-  function addLaneMarking(fixedCoord, axis, length) {
+  function addLaneMarking(fixedCoord, axis, length, center) {
+    if (center === undefined) center = 0;
     const count = Math.floor(length / DASH_SPAN);
     for (let i = 0; i < count; i++) {
-      const pos = -length / 2 + i * DASH_SPAN + DASH_LEN / 2;
+      const pos = center - length / 2 + i * DASH_SPAN + DASH_LEN / 2;
       const w = axis === 'x' ? DASH_LEN : 0.08;
       const d = axis === 'x' ? 0.08 : DASH_LEN;
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), laneMat);
@@ -474,9 +496,12 @@
       scene.add(mesh);
     }
   }
+  // Comme pour les trottoirs : le marquage nord-sud des avenues non
+  // centrales s'arrête à la rivière (49) au lieu de continuer dans l'eau.
   [0, 16, -16, 32, -32, 44, -44].forEach(pos => {
     addLaneMarking(pos, 'x', 140);
-    addLaneMarking(pos, 'z', 140);
+    if (pos === 0) addLaneMarking(pos, 'z', 140);
+    else addLaneMarking(pos, 'z', 119, -10.5);
   });
 
   /* Passages piétons aux grands carrefours */
@@ -504,12 +529,334 @@
   });
 
   // Lampadaires le long des grandes avenues
+  // Quand k tombe pile sur une avenue perpendiculaire (±16, ±32), le
+  // lampadaire atterrissait en plein milieu de cette route (le couloir
+  // x/z=±17.3 est parallèle aux avenues, mais k balaie une coordonnée qui
+  // les croise) — même famille de bug que les magasins/tours corrigés
+  // plus tôt dans la session.
+  const LAMP_AVENUES = [0, 16, -16, 32, -32, 44, -44];
   for (let k = -40; k <= 40; k += 8) {
     if (Math.abs(k) < 3) continue;
+    if (LAMP_AVENUES.some(a => Math.abs(k - a) < 1.5)) continue;
     addStreetLamp(k, 17.3);
     addStreetLamp(k, -17.3);
     addStreetLamp(17.3, k);
     addStreetLamp(-17.3, k);
+  }
+
+  /* ── Feux de circulation + circulation automobile ──
+     Un seul cycle de phase global (piloté par l'accumulateur t), partagé
+     par tous les feux : quand l'axe X est vert, l'axe Z est rouge, et
+     inversement, avec une courte phase orange à la transition. Les
+     voitures s'arrêtent réellement au rouge près des carrefours équipés.
+     4 feux aux carrefours (0,16)/(0,-16)/(16,0)/(-16,0), décalés vers le
+     centre (×0.75) et vers l'extérieur (+2.0) pour rester hors des bandes
+     route+trottoir des deux avenues qui se croisent à cet endroit. */
+  const TRAFFIC_CYCLE = 6, TRAFFIC_YELLOW = 1;
+  function getTrafficPhase(time) {
+    const half = TRAFFIC_CYCLE + TRAFFIC_YELLOW;
+    const pos = time % (half * 2);
+    if (pos < TRAFFIC_CYCLE) return 'X_GREEN';
+    if (pos < half) return 'X_YELLOW';
+    if (pos < half + TRAFFIC_CYCLE) return 'Z_GREEN';
+    return 'Z_YELLOW';
+  }
+  function trafficAxisState(phase, axisLetter) {
+    if (phase[0] !== axisLetter) return 'red';
+    return phase.endsWith('YELLOW') ? 'yellow' : 'green';
+  }
+
+  const trafficMatOn = {
+    red:    new THREE.MeshStandardMaterial({ color: 0xff2a3a, emissive: 0xff2a3a, emissiveIntensity: 1.3 }),
+    yellow: new THREE.MeshStandardMaterial({ color: 0xffcc33, emissive: 0xffcc33, emissiveIntensity: 1.3 }),
+    green:  new THREE.MeshStandardMaterial({ color: 0x33ff77, emissive: 0x33ff77, emissiveIntensity: 1.3 }),
+  };
+  const trafficMatOff = new THREE.MeshStandardMaterial({ color: 0x241a1a, emissive: 0x000000, emissiveIntensity: 0 });
+  const trafficLampGeo = new THREE.SphereGeometry(0.09, 8, 8);
+  const trafficPoleMat = new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.6, metalness: 0.4 });
+  const trafficPoleGeo = new THREE.CylinderGeometry(0.05, 0.05, 1.7, 6);
+  const trafficBoxGeo  = new THREE.BoxGeometry(0.4, 0.5, 0.16);
+
+  const trafficLightGroups = [];
+  function createTrafficLight(x, z) {
+    const group = new THREE.Group();
+    const pole = new THREE.Mesh(trafficPoleGeo, trafficPoleMat);
+    pole.position.y = 0.85;
+    group.add(pole);
+    const box = new THREE.Mesh(trafficBoxGeo, trafficPoleMat);
+    box.position.y = 1.75;
+    group.add(box);
+
+    function lampColumn(dx) {
+      return [0.14, 0, -0.14].map(dy => {
+        const lamp = new THREE.Mesh(trafficLampGeo, trafficMatOff);
+        lamp.position.set(dx, 1.75 + dy, 0.1);
+        group.add(lamp);
+        return lamp;
+      });
+    }
+    const [xRed, xYellow, xGreen] = lampColumn(-0.11);
+    const [zRed, zYellow, zGreen] = lampColumn(0.11);
+
+    group.position.set(x, 0, z);
+    scene.add(group);
+    trafficLightGroups.push({ xRed, xYellow, xGreen, zRed, zYellow, zGreen });
+  }
+  // +2.5 (au lieu de +2.0) pour bien dégager le trottoir de l'avenue
+  // centrale (bord à 1.8) — 2.0 touchait quasiment le bord du boîtier.
+  // Le 5e feu (2.5,2.5) gère le carrefour central (x=0 × z=0) : sans lui,
+  // les voitures de l'avenue centrale n'avaient aucune raison de s'arrêter
+  // l'une pour l'autre à cet endroit précis et se traversaient.
+  [[2.5, 12], [2.5, -12], [12, 2.5], [-12, 2.5], [2.5, 2.5]].forEach(([x, z]) => createTrafficLight(x, z));
+
+  let lastTrafficPhase = null;
+  function updateTrafficLights(phase) {
+    if (phase === lastTrafficPhase) return; // matériaux déjà à jour, rien à refaire
+    lastTrafficPhase = phase;
+    const xState = trafficAxisState(phase, 'X');
+    const zState = trafficAxisState(phase, 'Z');
+    trafficLightGroups.forEach(g => {
+      g.xRed.material    = xState === 'red'    ? trafficMatOn.red    : trafficMatOff;
+      g.xYellow.material = xState === 'yellow' ? trafficMatOn.yellow : trafficMatOff;
+      g.xGreen.material  = xState === 'green'  ? trafficMatOn.green  : trafficMatOff;
+      g.zRed.material    = zState === 'red'    ? trafficMatOn.red    : trafficMatOff;
+      g.zYellow.material = zState === 'yellow' ? trafficMatOn.yellow : trafficMatOff;
+      g.zGreen.material  = zState === 'green'  ? trafficMatOn.green  : trafficMatOff;
+    });
+  }
+
+  /* Voitures : avenue centrale (×2 axes) + avenues ±16 (×2 axes), une
+     voiture par sens, qui roule en boucle et s'arrête au rouge aux
+     carrefours équipés d'un feu (stopCoords = coordonnée à ne pas
+     franchir tant que l'axe de la voiture n'est pas vert/orange). */
+  // Largeur 0.5 (pas 0.85) : les avenues ±16 ne font que 1.4 de large,
+  // deux voies de 0.85 s'y seraient chevauchées (et auraient débordé sur
+  // le trottoir) — recalculé après coup, gardé étroit pour tenir avec
+  // marge dans les deux gabarits d'avenue (1.4 et 2.4).
+  const movingCars = [];
+  const carBodyGeo2 = new THREE.BoxGeometry(1.4, 0.45, 0.5);
+  const carBodyMat2 = new THREE.MeshStandardMaterial({ color: 0x151b2d, roughness: 0.5, metalness: 0.5 });
+  const carGlowGeo2 = new THREE.BoxGeometry(0.08, 0.14, 0.46);
+  const carGlowMat2 = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 1 });
+
+  // Hauteur du tablier du pont (voir createRiver) : une voiture sur
+  // l'avenue centrale doit suivre ce profil au lieu de rouler à plat
+  // "dans" la rivière quand elle traverse.
+  function bridgeY(z) {
+    if (z < 49 || z > 59) return 0;
+    if (z < 51) return ((z - 49) / 2) * 0.65;
+    if (z > 57) return ((59 - z) / 2) * 0.65;
+    return 0.65;
+  }
+
+  function createCar(axis, laneCoord, startPos, speed, stopCoords, wrapMin, wrapMax) {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(carBodyGeo2, carBodyMat2);
+    body.position.y = 0.28;
+    group.add(body);
+    const glow = new THREE.Mesh(carGlowGeo2, carGlowMat2);
+    glow.position.set(speed >= 0 ? 0.78 : -0.78, 0.3, 0);
+    group.add(glow);
+    if (axis === 'z') group.rotation.y = Math.PI / 2;
+    scene.add(group);
+    movingCars.push({
+      group, axis, laneCoord, pos: startPos, baseSpeed: speed, speed, stopCoords,
+      wrapMin: wrapMin === undefined ? -70 : wrapMin,
+      wrapMax: wrapMax === undefined ? 70 : wrapMax,
+      // Seule l'avenue centrale (|laneCoord| ~0.85) passe par le pont —
+      // les avenues ±16 s'arrêtent avant la rivière, jamais concernées.
+      onBridgeAvenue: axis === 'z' && Math.abs(laneCoord) < 1.6,
+    });
+  }
+
+  // Toutes les voitures partagent la même liste d'arrêt [0,16,-16] : ce
+  // sont les 3 coordonnées où existe une avenue perpendiculaire avec du
+  // trafic (0 = avenue centrale, ±16). Une voiture sur l'avenue z=16 par
+  // exemple croise aussi l'avenue x=16 et x=-16 à ces points (ex: (16,16))
+  // — les laisser hors de la liste faisait se traverser les voitures aux
+  // 4 coins ±16/±16, pas seulement au centre.
+  const CAR_STOPS = [0, 16, -16];
+  // Avenue centrale (demi-largeur route 1.2, voies à ±0.85 → bord voiture
+  // à 1.10, marge 0.1 avant la route ; trottoir commence à 1.3)
+  createCar('x', 0.85,  -30, 0.05,  CAR_STOPS);
+  createCar('x', -0.85,  30, -0.05, CAR_STOPS);
+  createCar('z', 0.85,  -30, 0.05,  CAR_STOPS);
+  createCar('z', -0.85,  30, -0.05, CAR_STOPS);
+  // Avenues ±16 (demi-largeur route 0.7, voies à ±0.35 → bord voiture à
+  // 0.60, marge 0.1 avant la route)
+  createCar('x', 16.35,   10, 0.045,  CAR_STOPS);
+  createCar('x', 15.65,  -10, -0.045, CAR_STOPS);
+  createCar('x', -15.65,  10, 0.045,  CAR_STOPS);
+  createCar('x', -16.35, -10, -0.045, CAR_STOPS);
+  // Voitures z (nord-sud) des avenues ±16 : leur route s'arrête maintenant
+  // à 49 (avant la rivière, pas de pont ici) — wrapMax=47 pour qu'elles
+  // rebroussent chemin avant d'arriver dans l'eau, au lieu de continuer
+  // tout droit sur une route qui n'existe plus.
+  createCar('z', 16.35,   10, 0.045,  CAR_STOPS, -70, 47);
+  createCar('z', 15.65,  -10, -0.045, CAR_STOPS, -70, 47);
+  createCar('z', -15.65,  10, 0.045,  CAR_STOPS, -70, 47);
+  createCar('z', -16.35, -10, -0.045, CAR_STOPS, -70, 47);
+
+  function updateMovingCars(phase) {
+    movingCars.forEach(car => {
+      const axisLetter = car.axis === 'x' ? 'X' : 'Z';
+      const axisMoving = phase[0] === axisLetter; // vert ou orange pour cet axe
+      let targetSpeed = car.baseSpeed;
+      if (!axisMoving) {
+        const dir = Math.sign(car.baseSpeed);
+        const nearRedStop = car.stopCoords.some(c => {
+          const d = (c - car.pos) * dir; // distance devant la voiture, dans son sens de marche
+          return d > 0 && d < 3;
+        });
+        if (nearRedStop) targetSpeed = 0;
+      }
+      car.speed += (targetSpeed - car.speed) * 0.06;
+      car.pos += car.speed;
+      if (car.pos > car.wrapMax) car.pos = car.wrapMin;
+      if (car.pos < car.wrapMin) car.pos = car.wrapMax;
+      const y = car.onBridgeAvenue ? bridgeY(car.pos) : 0;
+      if (car.axis === 'x') car.group.position.set(car.pos, y, car.laneCoord);
+      else car.group.position.set(car.laneCoord, y, car.pos);
+    });
+  }
+
+  /* ── Piétons ──
+     Marchent sur les trottoirs déjà posés — on réutilise TELS QUELS les
+     offsets déjà passés à addSidewalk (±1.05 pour ±16/±32) : aucune
+     nouvelle coordonnée à vérifier, ils marchent pile sur le trottoir.
+     Silhouette articulée (torse/tête/2 jambes/2 bras qui se balancent en
+     marchant) plutôt qu'un simple cylindre qui glisse — c'est le
+     mouvement de marche, pas juste la forme, qui vendait le "robot". */
+  const movingPedestrians = [];
+  const pedTorsoGeo = new THREE.CylinderGeometry(0.075, 0.09, 0.22, 6);
+  const pedHeadGeo = new THREE.SphereGeometry(0.075, 8, 8);
+  const pedLimbGeo = new THREE.CylinderGeometry(0.028, 0.022, 0.2, 5);
+  const pedMatA = new THREE.MeshStandardMaterial({ color: 0x8fa0c0, roughness: 0.8 });
+  const pedMatB = new THREE.MeshStandardMaterial({ color: 0xc08fa8, roughness: 0.8 });
+
+  function pedLimb(mat, hipY) {
+    const pivot = new THREE.Group();
+    pivot.position.y = hipY;
+    const mesh = new THREE.Mesh(pedLimbGeo, mat);
+    mesh.position.y = -0.1;
+    pivot.add(mesh);
+    return pivot;
+  }
+  function createPedestrian(axis, lane, startPos, speed) {
+    const group = new THREE.Group();
+    const mat = Math.random() > 0.5 ? pedMatA : pedMatB;
+
+    const torso = new THREE.Mesh(pedTorsoGeo, mat);
+    torso.position.y = 0.33;
+    group.add(torso);
+    const head = new THREE.Mesh(pedHeadGeo, mat);
+    head.position.y = 0.52;
+    group.add(head);
+
+    const legL = pedLimb(mat, 0.22); legL.position.x = -0.045; group.add(legL);
+    const legR = pedLimb(mat, 0.22); legR.position.x =  0.045; group.add(legR);
+    const armL = pedLimb(mat, 0.42); armL.position.x = -0.11;  group.add(armL);
+    const armR = pedLimb(mat, 0.42); armR.position.x =  0.11;  group.add(armR);
+
+    scene.add(group);
+    movingPedestrians.push({
+      group, axis, lane, pos: startPos, speed,
+      walkPhase: Math.random() * Math.PI * 2, legL, legR, armL, armR,
+    });
+  }
+  const PEDESTRIAN_STRIPS = [];
+  [16, -16, 32, -32].forEach(pos => {
+    PEDESTRIAN_STRIPS.push({ axis: 'x', lane: pos + 1.05 });
+    PEDESTRIAN_STRIPS.push({ axis: 'x', lane: pos - 1.05 });
+    PEDESTRIAN_STRIPS.push({ axis: 'z', lane: pos + 1.05 });
+    PEDESTRIAN_STRIPS.push({ axis: 'z', lane: pos - 1.05 });
+  });
+  PEDESTRIAN_STRIPS.forEach((s, i) => {
+    const speed = (0.012 + Math.random() * 0.008) * (i % 2 === 0 ? 1 : -1);
+    createPedestrian(s.axis, s.lane, -70 + Math.random() * 140, speed);
+  });
+  function updateMovingPedestrians() {
+    movingPedestrians.forEach(p => {
+      p.pos += p.speed;
+      // Les trottoirs nord-sud (axis 'z') des avenues ±16/±32 s'arrêtent
+      // maintenant à 49 (avant la rivière) : rebrousser chemin à 47 plutôt
+      // que 70, sinon le piéton continuerait sur un trottoir qui n'existe
+      // plus au-dessus de l'eau.
+      const wrapMax = p.axis === 'z' ? 47 : 70;
+      if (p.pos > wrapMax) p.pos = -70;
+      if (p.pos < -70) p.pos = wrapMax;
+
+      const swing = Math.sin(t * 8 + p.walkPhase) * 0.55;
+      p.legL.rotation.x =  swing;
+      p.legR.rotation.x = -swing;
+      p.armL.rotation.x = -swing;
+      p.armR.rotation.x =  swing;
+      const bob = Math.abs(Math.cos(t * 8 + p.walkPhase)) * 0.025;
+
+      // Oriente le piéton dans son sens de marche (avant, pas juste "sur l'axe")
+      const facing = p.axis === 'x'
+        ? (p.speed >= 0 ? Math.PI / 2 : -Math.PI / 2)
+        : (p.speed >= 0 ? 0 : Math.PI);
+      p.group.rotation.y = facing;
+
+      if (p.axis === 'x') p.group.position.set(p.pos, bob, p.lane);
+      else p.group.position.set(p.lane, bob, p.pos);
+    });
+  }
+
+  /* ── Cyclistes ──
+     Les avenues ±16/±32 sont trop étroites pour caser une vraie file
+     vélo distincte des voitures sans chevaucher la route ou le trottoir
+     (marge réelle < 0.1 unité une fois les voies voiture placées) — les
+     cyclistes roulent donc sur les trottoirs de l'avenue ±44, laissés
+     libres par les piétons (ci-dessus, limités à ±16/±32), toujours en
+     réutilisant les offsets déjà posés pour ces trottoirs. */
+  const movingCyclists = [];
+  const cycFrameGeo = new THREE.BoxGeometry(0.5, 0.06, 0.06);
+  const cycWheelGeo = new THREE.TorusGeometry(0.14, 0.02, 6, 10);
+  const cycRiderGeo = new THREE.SphereGeometry(0.11, 6, 6);
+  const cycMat = new THREE.MeshStandardMaterial({ color: 0x2e3447, roughness: 0.5, metalness: 0.4 });
+  const cycRiderMat = new THREE.MeshStandardMaterial({ color: 0xffe27a, roughness: 0.7 });
+  function createCyclist(axis, lane, startPos, speed) {
+    const group = new THREE.Group();
+    const frame = new THREE.Mesh(cycFrameGeo, cycMat);
+    frame.position.y = 0.22;
+    group.add(frame);
+    [-0.22, 0.22].forEach(dx => {
+      const wheel = new THREE.Mesh(cycWheelGeo, cycMat);
+      wheel.rotation.y = Math.PI / 2;
+      wheel.position.set(dx, 0.14, 0);
+      group.add(wheel);
+    });
+    const rider = new THREE.Mesh(cycRiderGeo, cycRiderMat);
+    rider.position.y = 0.42;
+    group.add(rider);
+    if (axis === 'z') group.rotation.y = Math.PI / 2;
+    scene.add(group);
+    movingCyclists.push({ group, axis, lane, pos: startPos, speed });
+  }
+  const CYCLIST_STRIPS = [];
+  [44, -44].forEach(pos => {
+    CYCLIST_STRIPS.push({ axis: 'x', lane: pos + 1.05 });
+    CYCLIST_STRIPS.push({ axis: 'x', lane: pos - 1.05 });
+    CYCLIST_STRIPS.push({ axis: 'z', lane: pos + 1.05 });
+    CYCLIST_STRIPS.push({ axis: 'z', lane: pos - 1.05 });
+  });
+  CYCLIST_STRIPS.forEach((s, i) => {
+    const speed = (0.022 + Math.random() * 0.01) * (i % 2 === 0 ? 1 : -1);
+    createCyclist(s.axis, s.lane, -70 + Math.random() * 140, speed);
+  });
+  function updateMovingCyclists() {
+    movingCyclists.forEach(c => {
+      c.pos += c.speed;
+      // Même raison que les piétons : le trottoir nord-sud de l'avenue
+      // ±44 s'arrête à 49, avant la rivière.
+      const wrapMax = c.axis === 'z' ? 47 : 70;
+      if (c.pos > wrapMax) c.pos = -70;
+      if (c.pos < -70) c.pos = wrapMax;
+      if (c.axis === 'x') c.group.position.set(c.pos, 0, c.lane);
+      else c.group.position.set(c.lane, 0, c.pos);
+    });
   }
 
   /* ── Bâtiments ── */
@@ -902,7 +1249,9 @@
   }
 
   function createPark(x, z) {
-    const grassGeo = new THREE.PlaneGeometry(9, 9);
+    // Réduit de 9×9 à 6.5×6.5 : moins de terrain "vide", plus de place
+    // pour des bâtiments/magasins autour.
+    const grassGeo = new THREE.PlaneGeometry(6.5, 6.5);
     const grassMat = new THREE.MeshStandardMaterial({
       color: 0x0e2417, roughness: 1,
       polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
@@ -920,8 +1269,8 @@
     scene.add(beacon);
 
     // Quelques arbres répartis aléatoirement dans le parc (nombre limité)
-    for (let i = 0; i < 7; i++) {
-      createTree(x + (Math.random() - 0.5) * 6.5, z + (Math.random() - 0.5) * 6.5);
+    for (let i = 0; i < 5; i++) {
+      createTree(x + (Math.random() - 0.5) * 5, z + (Math.random() - 0.5) * 5);
     }
   }
 
@@ -931,48 +1280,176 @@
   createPark(38, 8);
   createPark(-8, -38);
 
+  /* ── Oiseaux de parc ──
+     Remplacent les animaux au sol (préférence utilisateur) : volent bas
+     au-dessus de la pelouse en petit cercle, toujours visibles (contrairement
+     aux oiseaux de ville plus haut dans le ciel, réservés au mode jour).
+     Réutilise la silhouette déjà dessinée pour les oiseaux de ville
+     (makeBirdTexture), en plus petit. */
+  const parkBirdMat = new THREE.SpriteMaterial({ map: makeBirdTexture(), transparent: true, opacity: 0.85, depthWrite: false });
+  const movingParkBirds = [];
+  function createParkBird(cx, cz) {
+    const spr = new THREE.Sprite(parkBirdMat);
+    spr.scale.set(0.9, 0.45, 1);
+    scene.add(spr);
+    movingParkBirds.push({
+      sprite: spr, centerX: cx, centerZ: cz,
+      radius: 1.4 + Math.random() * 1.3,
+      height: 1.6 + Math.random() * 0.8,
+      speed: (0.5 + Math.random() * 0.4) * (Math.random() > 0.5 ? 1 : -1),
+      phase: Math.random() * Math.PI * 2,
+      flapPhase: Math.random() * Math.PI * 2,
+    });
+  }
+  [[38, 8], [-8, -38]].forEach(([px, pz]) => {
+    for (let i = 0; i < 3; i++) createParkBird(px, pz);
+  });
+  function updateParkBirds() {
+    movingParkBirds.forEach(b => {
+      const ang = t * b.speed + b.phase;
+      b.sprite.position.set(
+        b.centerX + Math.cos(ang) * b.radius,
+        b.height + Math.sin(t * 3 + b.flapPhase) * 0.15,
+        b.centerZ + Math.sin(ang) * b.radius
+      );
+      const flap = 1 + Math.sin(t * 9 + b.flapPhase) * 0.25;
+      b.sprite.scale.set(0.9, 0.45 * flap, 1);
+    });
+  }
+
+  // Un peu plus de vie commerçante près des parcs, maintenant plus petits
+  // (espace vérifié dégagé de la pelouse et de l'avenue la plus proche).
+  createShop(33, 8, Math.PI / 2, SHOP_TYPES[0]);
+  createShop(-3.275, -38, -Math.PI / 2, SHOP_TYPES[1]);
+
+  /* ── Quartier constructible (simulation) ──
+     6 lots dans le coin resté libre entre les avenues -32/-44 (calcul de
+     dégagement fait à la main : zone sûre x,z ∈ [-42.675,-33.325], marge
+     ≥2 unités gardée de chaque côté) — à l'écart du parc sud (-8,-38) et
+     de l'école (-38,8), qui occupent les deux bras de cette zone mais pas
+     son coin diagonal. */
+  const DISTRICT_X = -38, DISTRICT_Z = -38, LOT_STEP = 2.6;
+  const lotMarkerMeshes = [];
+  const lotMat = new THREE.MeshBasicMaterial({
+    color: 0xffe27a, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+  });
+  const lotMatActive = new THREE.MeshBasicMaterial({
+    color: 0xffe27a, transparent: true, opacity: 0.8,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+  });
+  function buildDistrictLots() {
+    let lotId = 0;
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 3; col++) {
+        const x = DISTRICT_X + (col - 1) * LOT_STEP;
+        const z = DISTRICT_Z + (row - 0.5) * LOT_STEP;
+        const marker = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 2.0), lotMat);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(x, 0.05, z);
+        marker.userData = { lotId, x, z };
+        scene.add(marker);
+        lotMarkerMeshes.push(marker);
+        lotId++;
+      }
+    }
+    const signTex = makeSignTexture('CHANTIER_MUNICIPAL', '#ffe27a');
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.4, 0.85),
+      new THREE.MeshBasicMaterial({ map: signTex, transparent: true })
+    );
+    sign.position.set(DISTRICT_X, 1.2, DISTRICT_Z - LOT_STEP - 0.6);
+    scene.add(sign);
+    const signBack = sign.clone();
+    signBack.rotation.y = Math.PI;
+    scene.add(signBack);
+  }
+  buildDistrictLots();
+
+  // Bâtiment civique (simulation) — même famille visuelle que createBuilding
+  // mais coloré/étiqueté depuis SIM_BUILDING_TYPES au lieu de JOBS.
+  function createSimBuilding(x, z, type) {
+    const info = SIM_BUILDING_TYPES[type];
+    const h = 2.5;
+    const group = new THREE.Group();
+
+    const bodyGeo = new THREE.BoxGeometry(1.8, h, 1.8);
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x0d1828, roughness: 0.6, metalness: 0.4,
+      emissive: new THREE.Color(info.color), emissiveIntensity: 0.12,
+    });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = h / 2;
+    group.add(body);
+
+    const edgesGeo = new THREE.EdgesGeometry(bodyGeo);
+    const edges = new THREE.LineSegments(edgesGeo, new THREE.LineBasicMaterial({ color: info.color, transparent: true, opacity: 0.7 }));
+    edges.position.y = h / 2;
+    group.add(edges);
+
+    const roof = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.85, 1.85),
+      new THREE.MeshStandardMaterial({ color: info.color, emissive: new THREE.Color(info.color), emissiveIntensity: 0.6, transparent: true, opacity: 0.7 })
+    );
+    roof.rotation.x = -Math.PI / 2;
+    roof.position.y = h + 0.01;
+    group.add(roof);
+
+    const hex = '#' + info.color.toString(16).padStart(6, '0');
+    const signTex = makeSignTexture(info.label.toUpperCase(), hex);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.42), new THREE.MeshBasicMaterial({ map: signTex, transparent: true }));
+    sign.position.set(0, h + 0.32, 0.92);
+    group.add(sign);
+    const signBack = sign.clone();
+    signBack.rotation.y = Math.PI;
+    group.add(signBack);
+
+    group.position.set(x, 0, z);
+    scene.add(group);
+    return group;
+  }
+
+  function flashMoneyDenied() {
+    const el = document.getElementById('sim-money');
+    if (!el) return;
+    el.style.color = '#ff4444';
+    setTimeout(() => { el.style.color = ''; }, 400);
+  }
+
+  function tryPlaceBuilding(lotId, type) {
+    const info = SIM_BUILDING_TYPES[type];
+    if (!info) return false;
+    if (sim.buildings.some(b => b.lotId === lotId)) return false;
+    if (sim.money < info.cost) { flashMoneyDenied(); return false; }
+    const marker = lotMarkerMeshes.find(m => m.userData.lotId === lotId);
+    if (!marker) return false;
+    const { x, z } = marker.userData;
+
+    sim.money -= info.cost;
+    sim.buildings.push({ id: sim.nextBuildingId++, type, lotId, x, z, builtAt: Date.now() });
+    createSimBuilding(x, z, type);
+    marker.visible = false; // le bâtiment recouvre désormais le marqueur
+    saveSim();
+    updateSimUI();
+    updateBuildMenu();
+    return true;
+  }
+
+  // Reconstruit les bâtiments déjà posés (sauvegarde localStorage) au chargement
+  function rebuildSimBuildingsFromSave() {
+    sim.buildings.forEach(b => {
+      createSimBuilding(b.x, b.z, b.type);
+      const marker = lotMarkerMeshes.find(m => m.userData.lotId === b.lotId);
+      if (marker) marker.visible = false;
+    });
+  }
+  rebuildSimBuildingsFromSave();
+
   /* ── Ligne de métro aérienne : deux stations reliées par un seul rail
      continu (au lieu d'un unique segment isolé), avec une rame qui
      parcourt toute la ligne en va-et-vient. ── */
   const movingTrains = [];
   const METRO_COLOR = 0x2496ed;
-
-  function createMetroPlatform(x, z, label) {
-    const group = new THREE.Group();
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x2e3447, roughness: 0.6, metalness: 0.3 });
-
-    const platGeo = new THREE.BoxGeometry(8, 0.4, 3);
-    const platMat = new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.8 });
-    const plat = new THREE.Mesh(platGeo, platMat);
-    plat.position.y = 0.2;
-    group.add(plat);
-
-    const canopyGeo = new THREE.BoxGeometry(8.4, 0.15, 3.4);
-    const canopyMat = new THREE.MeshStandardMaterial({ color: METRO_COLOR, emissive: METRO_COLOR, emissiveIntensity: 0.3 });
-    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-    canopy.position.y = 3;
-    group.add(canopy);
-
-    const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.8, 6);
-    [[-3.8, -1.3], [3.8, -1.3], [-3.8, 1.3], [3.8, 1.3]].forEach(([px, pz]) => {
-      const pole = new THREE.Mesh(poleGeo, poleMat);
-      pole.position.set(px, 1.6, pz);
-      group.add(pole);
-    });
-
-    const signTex = makeSignTexture(label, '#2496ed');
-    const signMat = new THREE.MeshBasicMaterial({ map: signTex, transparent: true });
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.85), signMat);
-    sign.position.set(0, 3.7, 1.75);
-    group.add(sign);
-    const signBack = sign.clone();
-    signBack.rotation.y = Math.PI;
-    signBack.position.z = -1.75;
-    group.add(signBack);
-
-    group.position.set(x, 0, z);
-    scene.add(group);
-  }
 
   // Rail continu + pylônes entre deux points alignés sur le même axe
   // (x1===x2 → ligne verticale, z1===z2 → ligne horizontale), avec une
@@ -980,7 +1457,8 @@
   const metroRailMat = new THREE.MeshStandardMaterial({ color: 0x333844, metalness: 0.7, roughness: 0.3 });
   const metroPillarMat = new THREE.MeshStandardMaterial({ color: 0x2e3447, roughness: 0.6, metalness: 0.3 });
   const metroPillarGeo = new THREE.CylinderGeometry(0.12, 0.12, 1.4, 6);
-  function createMetroTrack(x1, z1, x2, z2) {
+  function createMetroTrack(x1, z1, x2, z2, withTrain) {
+    if (withTrain === undefined) withTrain = true;
     const horizontal = z1 === z2;
     const length = horizontal ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
     const midX = (x1 + x2) / 2, midZ = (z1 + z2) / 2;
@@ -996,6 +1474,7 @@
       pillar.position.set(midX + (horizontal ? d : 0), 0.7, midZ + (horizontal ? 0 : d));
       scene.add(pillar);
     }
+    if (!withTrain) return; // ligne annulaire : les rames sont gérées à part (updateLoopTrains)
 
     // Rame qui glisse d'un bout à l'autre de la ligne (pas de lumière, juste émissif)
     const train = new THREE.Mesh(
@@ -1012,9 +1491,148 @@
     });
   }
 
-  createMetroPlatform(8, 38, 'STATION_EST');
-  createMetroPlatform(-26, 38, 'STATION_OUEST');
+  /* Gare (station ouest) : quai allongé + verrière sur toute la longueur
+     + bâtiment voyageurs à l'extrémité — plus qu'un simple arrêt, une
+     vraie tête de ligne. Centrée à x=-23.3 (pas -26) et volontairement
+     pas plus longue : le couloir dégagé entre l'avenue -16 et l'avenue
+     -32 ne fait que ~13 unités de large, marges comprises. */
+  function createGareStation(x, z, label, hallSide) {
+    if (hallSide === undefined) hallSide = -1; // -1 = bâtiment côté ouest, 1 = côté est
+    const group = new THREE.Group();
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x2e3447, roughness: 0.6, metalness: 0.3 });
+    const hallMat = new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.75, metalness: 0.2 });
+
+    const platGeo = new THREE.BoxGeometry(10, 0.4, 4);
+    const platMat = new THREE.MeshStandardMaterial({ color: 0x1c2436, roughness: 0.8 });
+    const plat = new THREE.Mesh(platGeo, platMat);
+    plat.position.y = 0.2;
+    group.add(plat);
+
+    // Verrière sur toute la longueur, avec beaucoup plus de piliers qu'un
+    // simple arrêt — la répétition qui s'estompe dans le brouillard donne
+    // l'impression que le quai continue au-delà de ce qu'on voit net.
+    const canopyGeo = new THREE.BoxGeometry(10.4, 0.15, 4.4);
+    const canopyMat = new THREE.MeshStandardMaterial({
+      color: METRO_COLOR, emissive: METRO_COLOR, emissiveIntensity: 0.3, transparent: true, opacity: 0.85
+    });
+    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
+    canopy.position.y = 3.2;
+    group.add(canopy);
+
+    const poleGeo = new THREE.CylinderGeometry(0.07, 0.07, 3, 6);
+    for (let px = -4.5; px <= 4.5; px += 2.25) {
+      [-1.75, 1.75].forEach(pz => {
+        const pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.set(px, 1.7, pz);
+        group.add(pole);
+      });
+    }
+
+    // Bâtiment voyageurs (tête de station) à une extrémité du quai
+    const hallX = hallSide * 5.7;
+    const hall = new THREE.Mesh(new THREE.BoxGeometry(2.2, 4.2, 4.6), hallMat);
+    hall.position.set(hallX, 2.1, 0);
+    group.add(hall);
+    const hallRoof = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 0.15, 4.8),
+      new THREE.MeshStandardMaterial({ color: METRO_COLOR, emissive: METRO_COLOR, emissiveIntensity: 0.4 })
+    );
+    hallRoof.position.set(hallX, 4.25, 0);
+    group.add(hallRoof);
+
+    const signTex = makeSignTexture(label, '#2496ed');
+    const signMat = new THREE.MeshBasicMaterial({ map: signTex, transparent: true });
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.85), signMat);
+    sign.position.set(hallX, 2.6, 2.35);
+    group.add(sign);
+    const signBack = sign.clone();
+    signBack.rotation.y = Math.PI;
+    signBack.position.z = -2.35;
+    group.add(signBack);
+
+    group.position.set(x, 0, z);
+    scene.add(group);
+  }
+
+  // Bâtiment voyageurs côté est (hallSide=1) pour GARE_EST : côté ouest
+  // (hallSide=-1, par défaut) serait trop près de l'avenue centrale.
+  // Centre décalé à 7.3 (pas 8) pour garder de la marge des deux côtés
+  // (avenue centrale à l'ouest, avenue 16 à l'est).
+  createGareStation(7.3, 38, 'GARE_EST', 1);
+  createGareStation(-23.3, 38, 'GARE_OUEST');
   createMetroTrack(-26, 38, 22, 38);
+
+  /* ── Ligne annulaire : le métro boucle autour de toute la ville ──
+     4 segments réutilisant createMetroTrack (chacun avec son propre train
+     en va-et-vient) formant un grand rectangle autour du centre :
+     - Nord/Est/Ouest à ±28.65 : juste à l'intérieur de l'avenue 32
+       (bande route+trottoir jusqu'à 30.675), à mi-chemin entre deux
+       emplacements de magasins (anneaux à 18.3/34.3, k pas de 4.3) pour
+       ne pas les chevaucher, et à bonne distance des tours du skyline
+       (x=±23).
+     - Sud à z=-50 : la zone entre le parc sud/le parking souterrain et
+       l'avenue -44 est trop étroite pour y faire passer la boucle sans
+       toucher quelque chose (parc, parking, anneau de magasins, avenue
+       -16 se chevauchent tous dans cette bande) — plutôt que de viser un
+       créneau de quelques dixièmes d'unité, la boucle passe large, bien
+       au-delà de l'avenue -44, dans le terrain resté ouvert. */
+  createMetroTrack(-28.65, 28.65, 28.65, 28.65, false);   // Nord
+  createMetroTrack(28.65, -50, 28.65, 28.65, false);      // Est
+  createMetroTrack(-28.65, -50, -28.65, 28.65, false);    // Ouest
+  createMetroTrack(-28.65, -50, 28.65, -50, false);       // Sud
+
+  // 2 rames qui parcourent tout le circuit dans le même sens (au lieu
+  // d'une rame par côté qui faisait des allers-retours indépendants,
+  // ce qui donnait l'impression de trains qui n'allaient "pas dans le
+  // bon sens"). Position calculée par un paramètre de distance le long
+  // du périmètre complet, qui avance à vitesse constante et repart à 0
+  // en boucle.
+  const LOOP_CORNERS = [
+    [-28.65, 28.65],
+    [28.65, 28.65],
+    [28.65, -50],
+    [-28.65, -50],
+  ];
+  const loopSegments = LOOP_CORNERS.map((a, i) => {
+    const b = LOOP_CORNERS[(i + 1) % LOOP_CORNERS.length];
+    return { a, b, len: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  });
+  const LOOP_PERIMETER = loopSegments.reduce((sum, s) => sum + s.len, 0);
+  function loopPoint(dist) {
+    let s = ((dist % LOOP_PERIMETER) + LOOP_PERIMETER) % LOOP_PERIMETER;
+    for (const seg of loopSegments) {
+      if (s <= seg.len) {
+        const t = s / seg.len;
+        return [seg.a[0] + (seg.b[0] - seg.a[0]) * t, seg.a[1] + (seg.b[1] - seg.a[1]) * t];
+      }
+      s -= seg.len;
+    }
+    return loopSegments[0].a;
+  }
+  const loopTrains = [];
+  const loopTrainGeo = new THREE.BoxGeometry(2.2, 0.85, 0.85);
+  const loopTrainMat = new THREE.MeshStandardMaterial({ color: METRO_COLOR, emissive: METRO_COLOR, emissiveIntensity: 0.5, metalness: 0.4, roughness: 0.4 });
+  for (let i = 0; i < 2; i++) {
+    const mesh = new THREE.Mesh(loopTrainGeo, loopTrainMat);
+    mesh.position.y = 1.85;
+    scene.add(mesh);
+    loopTrains.push({ mesh, dist: (LOOP_PERIMETER / 2) * i }); // les 2 rames démarrent aux deux extrémités opposées de la boucle
+  }
+  const LOOP_TRAIN_SPEED = 0.09;
+  function updateLoopTrains() {
+    loopTrains.forEach(tr => {
+      tr.dist += LOOP_TRAIN_SPEED;
+      const [x, z] = loopPoint(tr.dist);
+      tr.mesh.position.x = x;
+      tr.mesh.position.z = z;
+      const [nx, nz] = loopPoint(tr.dist + 0.5);
+      // atan2(dz, dx), pas atan2(dx, dz) : le corps de la rame (BoxGeometry
+      // 2.2×0.85×0.85) a son grand axe le long de X local ; c'est le même
+      // repère que les voitures (rotation.y = π/2 pour un trajet en Z pur).
+      // L'ordre inversé décalait l'orientation d'environ 90°.
+      tr.mesh.rotation.y = Math.atan2(nz - z, nx - x);
+    });
+  }
 
   /* ── Stade e-sport ── */
   // Rayon réduit pour tenir dans le couloir entre les avenues ±32 et ±44
@@ -1105,28 +1723,64 @@
       scene.add(bank);
     });
 
-    const bridge = new THREE.Mesh(
-      new THREE.PlaneGeometry(3, 11),
-      new THREE.MeshStandardMaterial({
-        color: 0x1a2233, roughness: 0.8,
-        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2
-      })
-    );
-    bridge.rotation.x = -Math.PI / 2;
-    bridge.position.set(0, 0.045, 54);
-    scene.add(bridge);
+    // Pont surélevé (0.65 au-dessus du sol, pas 0.015 au-dessus de l'eau
+    // comme avant — la route semblait littéralement flotter dans la
+    // rivière) : rampes de raccord + tablier plat + garde-corps sur toute
+    // la traversée + piles dans l'eau.
+    const bridgeMat = new THREE.MeshStandardMaterial({ color: 0x1a2233, roughness: 0.8 });
+    const DECK_Y = 0.65;
 
-    const railGeo = new THREE.BoxGeometry(3.2, 0.12, 0.06);
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(3, 0.3, 6), bridgeMat);
+    deck.position.set(0, DECK_Y, 54);
+    scene.add(deck);
+
+    // Rampes : du niveau de la route (0.03) au tablier (0.65), de chaque côté
+    [[-1, 50.1], [1, 57.9]].forEach(([dir, z]) => {
+      const ramp = new THREE.Mesh(new THREE.BoxGeometry(3, 0.25, 2.2), bridgeMat);
+      ramp.position.set(0, DECK_Y / 2, z);
+      ramp.rotation.x = dir * 0.28;
+      scene.add(ramp);
+    });
+
+    // Garde-corps sur toute la traversée (rampes + tablier, z 49→59)
+    const railGeo = new THREE.BoxGeometry(0.06, 0.45, 10);
     const railMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.7 });
-    [4.6, -4.6].forEach(offset => {
+    [-1.55, 1.55].forEach(dx => {
       const rail = new THREE.Mesh(railGeo, railMat);
-      rail.position.set(0, 0.5, 54 + offset);
+      rail.position.set(dx, DECK_Y + 0.3, 54);
       scene.add(rail);
+    });
+
+    // Piles dans l'eau, sous le tablier
+    const pierGeo = new THREE.CylinderGeometry(0.3, 0.35, DECK_Y + 0.15, 8);
+    const pierMat = new THREE.MeshStandardMaterial({ color: 0x141c2c, roughness: 0.7 });
+    [-2.5, 0, 2.5].forEach(dz => {
+      const pier = new THREE.Mesh(pierGeo, pierMat);
+      pier.position.set(0, (DECK_Y + 0.15) / 2, 54 + dz);
+      scene.add(pier);
+    });
+
+    // Promenade piétonne le long des deux berges, juste derrière le
+    // liseré lumineux (bank) — limitée aux abords du pont (40 de large,
+    // pas toute la largeur de la rivière) : pas d'avenue ni de trottoir
+    // n'y mène ailleurs, une promenade sur 140 de large aurait été une
+    // longue bande vide sans utilité, pas juste une "ligne en plus".
+    const promenadeMat = new THREE.MeshStandardMaterial({ color: 0x1a2233, roughness: 0.95 });
+    const promenadeGeo = new THREE.PlaneGeometry(40, 1.5);
+    [48.55, 59.45].forEach(z => {
+      const promenade = new THREE.Mesh(promenadeGeo, promenadeMat);
+      promenade.rotation.x = -Math.PI / 2;
+      promenade.position.set(0, 0.03, z);
+      scene.add(promenade);
     });
   }
   createRiver();
-  // Petite route de raccord entre la dernière avenue (±44) et le pont (54)
-  addRoad(0, 49, 2.4, 10);
+  // Route de raccord entre la dernière avenue (±44) et le pied du pont
+  // (49) — s'arrête AVANT la rivière (qui commence à 49.5) au lieu de se
+  // prolonger dedans comme avant. Stub symétrique côté nord (59→64) pour
+  // que le pont mène quelque part des deux côtés.
+  addRoad(0, 46.5, 2.4, 5);
+  addRoad(0, 61.5, 2.4, 5);
 
   /* ── Montagnes lointaines (silhouette à l'horizon, tout autour de la
      ville) — juste des cônes low-poly partageant un seul matériau, dont
@@ -1265,12 +1919,118 @@
   let dragging = false;
   let lastPointer = { x: 0, y: 0 };
 
+  /* ── Balade libre (ZQSD/WASD ou flèches) — seulement en "Vue ville" ──
+     Déplace le point regardé (focusTarget) dans le sens où la caméra
+     regarde actuellement, au lieu d'un simple pivot autour d'un point
+     fixe. Un bonhomme (même rig articulé que les piétons, réutilise
+     pedTorsoGeo/pedHeadGeo/pedLimb) apparaît à cet endroit dès la
+     première touche pressée, marche vraiment (jambes/bras animés,
+     orienté dans le sens du déplacement), et la caméra se rapproche
+     pour le suivre en vue 3ᵉ personne au lieu de rester à la distance
+     "vue d'ensemble de la ville". */
+  const walkKeys = {};
+  window.addEventListener('keydown', (e) => { walkKeys[e.key.toLowerCase()] = true; });
+  window.addEventListener('keyup',   (e) => { walkKeys[e.key.toLowerCase()] = false; });
+  const WALK_SPEED = 0.3;
+
+  const playerMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.3, roughness: 0.6 });
+  const player = new THREE.Group();
+  const playerTorso = new THREE.Mesh(pedTorsoGeo, playerMat); playerTorso.position.y = 0.33; player.add(playerTorso);
+  const playerHead  = new THREE.Mesh(pedHeadGeo, playerMat);  playerHead.position.y  = 0.52; player.add(playerHead);
+  const playerLegL = pedLimb(playerMat, 0.22); playerLegL.position.x = -0.045; player.add(playerLegL);
+  const playerLegR = pedLimb(playerMat, 0.22); playerLegR.position.x =  0.045; player.add(playerLegR);
+  const playerArmL = pedLimb(playerMat, 0.42); playerArmL.position.x = -0.11;  player.add(playerArmL);
+  const playerArmR = pedLimb(playerMat, 0.42); playerArmR.position.x =  0.11;  player.add(playerArmR);
+  player.scale.setScalar(1.4); // un peu plus grand que les piétons de fond, pour bien le repérer
+  player.visible = false;
+  scene.add(player);
+
+  let playerActive = false; // devient vrai à la 1ère touche de marche, remis à false en quittant "Vue ville"
+  let playerFacing = 0;
+  let playerWalkPhase = 0;
+  let lookPitch = 0; // regard haut/bas en vue 1re personne (pas la même chose que orbit.phi)
+  // Commence en 3e personne (visible) : en 1re personne par défaut, le
+  // bonhomme n'apparaît jamais à l'écran (la caméra est "dedans"), ce qui
+  // donnait l'impression que rien ne se passait. On le voit d'abord
+  // apparaître, et on peut passer en 1re personne ensuite (bouton/touche V).
+  let thirdPerson = true;
+  const PLAYER_RADIUS = 9; // distance de la caméra en vue 3e personne
+
+  const viewModeToggle = document.getElementById('view-mode-toggle');
+  function toggleViewMode() {
+    thirdPerson = !thirdPerson;
+    player.visible = thirdPerson;
+  }
+  if (viewModeToggle) viewModeToggle.addEventListener('click', toggleViewMode);
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'v' && playerActive) toggleViewMode();
+  });
+
+  function updateWalkControls() {
+    if (!isCityOnlyView()) {
+      if (playerActive) focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant "Vue ville"
+      player.visible = false;
+      playerActive = false;
+      lookPitch = 0;
+      if (viewModeToggle) viewModeToggle.classList.add('hidden');
+      return;
+    }
+    if (focused) return;
+
+    let fInput = 0, rInput = 0;
+    if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
+    if (walkKeys['s'] || walkKeys['arrowdown'])                  fInput -= 1;
+    if (walkKeys['d'] || walkKeys['arrowright'])                 rInput += 1;
+    if (walkKeys['a'] || walkKeys['q'] || walkKeys['arrowleft']) rInput -= 1;
+    const moving = fInput !== 0 || rInput !== 0;
+
+    if (moving) {
+      if (!playerActive) {
+        playerActive = true;
+        player.visible = thirdPerson; // caché en 1re personne, visible en 3e
+        player.position.set(focusTarget.x, 0, focusTarget.z);
+        if (viewModeToggle) viewModeToggle.classList.remove('hidden');
+      }
+      const fx = -Math.sin(orbit.theta), fz = -Math.cos(orbit.theta);
+      const rx = -fz, rz = fx;
+      const len = Math.hypot(fInput, rInput);
+      const moveX = (fx * fInput + rx * rInput) / len;
+      const moveZ = (fz * fInput + rz * rInput) / len;
+      focusTarget.x += moveX * WALK_SPEED;
+      focusTarget.z += moveZ * WALK_SPEED;
+
+      playerFacing = Math.atan2(moveX, moveZ);
+      playerWalkPhase += 0.25;
+      const swing = Math.sin(playerWalkPhase) * 0.6;
+      playerLegL.rotation.x =  swing; playerLegR.rotation.x = -swing;
+      playerArmL.rotation.x = -swing; playerArmR.rotation.x =  swing;
+    } else if (playerActive) {
+      // Position à l'arrêt (bras/jambes reviennent au repos)
+      playerLegL.rotation.x += (0 - playerLegL.rotation.x) * 0.2;
+      playerLegR.rotation.x += (0 - playerLegR.rotation.x) * 0.2;
+      playerArmL.rotation.x += (0 - playerArmL.rotation.x) * 0.2;
+      playerArmR.rotation.x += (0 - playerArmR.rotation.x) * 0.2;
+    }
+
+    if (playerActive) {
+      player.position.x = focusTarget.x;
+      player.position.z = focusTarget.z;
+      player.rotation.y = playerFacing;
+    }
+  }
+
   window.addEventListener('mousemove', (e) => {
     if (dragging) {
       const dx = e.clientX - lastPointer.x, dy = e.clientY - lastPointer.y;
       lastPointer = { x: e.clientX, y: e.clientY };
       orbit.theta -= dx * 0.006;
-      orbit.phi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi - dy * 0.006));
+      if (playerActive && !thirdPerson) {
+        // Vue 1re personne : regard haut/bas dédié (lookPitch), pas orbit.phi
+        // (qui décrit l'angle d'une caméra en orbite, pas un regard sur soi).
+        lookPitch = Math.min(0.85, Math.max(-0.85, lookPitch - dy * 0.006));
+      } else {
+        orbit.phi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi - dy * 0.006));
+      }
       return;
     }
     if (focused) return;
@@ -1303,6 +2063,8 @@
   const tooltip   = document.getElementById('tooltip-3d');
   let hoveredBuilding = null;
   let selectedBuilding = null;
+  let buildMode = false;
+  let selectedBuildType = null;
 
   // Mesh bodies pour raycasting
   const bodyMeshes = buildings.map(g => g.userData.body);
@@ -1358,7 +2120,21 @@
 
   canvas.addEventListener('click', (e) => {
     if (document.body.classList.contains('hud-hidden')) return;
+    // En vue 1re personne, un clic ne doit pas déclencher unfocus() (qui
+    // recentre focusTarget sur l'origine et téléporterait le bonhomme).
+    if (playerActive) return;
     raycaster.setFromCamera(mouse, camera);
+
+    if (buildMode && selectedBuildType) {
+      const lotHits = raycaster.intersectObjects(lotMarkerMeshes);
+      if (lotHits.length) {
+        tryPlaceBuilding(lotHits[0].object.userData.lotId, selectedBuildType);
+        return;
+      }
+      // Aucun lot touché : on laisse tomber vers la logique normale — un
+      // clic dans le vide sert alors à annuler le mode construction.
+    }
+
     const hits = raycaster.intersectObjects(bodyMeshes);
     if (hits.length) {
       const idx = bodyMeshes.indexOf(hits[0].object);
@@ -1367,6 +2143,7 @@
       window.dispatchEvent(new CustomEvent('buildingSelected', { detail: { job: grp.userData.job } }));
     } else {
       unfocus();
+      if (buildMode) exitBuildMode();
     }
   });
 
@@ -1537,25 +2314,53 @@
       });
     }
 
+    // Balade libre au clavier (Vue ville uniquement)
+    updateWalkControls();
+
     // Orbite sphérique lissée (LERP faible = mouvement plus long/fluide)
     const LERP = 0.02;
     const FOCUS_LERP = 0.035;
-    // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
-    const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55 + zoomOffset;
-    const scrollPhiTarget    = focused ? orbit.phi    : Math.max(0.2, orbit.phi - scrollZoom * 0.35);
-    // Lerp angulaire (gestion du wrap 0/2π pour éviter le saut)
+    // Lerp angulaire (gestion du wrap 0/2π pour éviter le saut) — toujours
+    // actif, y compris en vue 1re personne (lacet du regard).
     let dt = orbit.theta - orbitSmooth.theta;
     if (dt >  Math.PI) dt -= Math.PI * 2;
     if (dt < -Math.PI) dt += Math.PI * 2;
-    orbitSmooth.theta += dt * (focused ? FOCUS_LERP : LERP);
-    orbitSmooth.phi   += (scrollPhiTarget    - orbitSmooth.phi)   * (focused ? FOCUS_LERP : 0.035);
-    orbitSmooth.radius += (scrollRadiusTarget - orbitSmooth.radius) * (focused ? FOCUS_LERP : 0.035);
-    focusTargetSmooth.lerp(focusTarget, FOCUS_LERP);
+    orbitSmooth.theta += dt * (focused || playerActive ? FOCUS_LERP : LERP);
 
-    camera.position.x = orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
-    camera.position.y = orbitSmooth.radius * Math.cos(orbitSmooth.phi);
-    camera.position.z = orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
-    camera.lookAt(focusTargetSmooth);
+    if (playerActive && !thirdPerson) {
+      // Vue 1re personne : la caméra est aux yeux du bonhomme, pas en
+      // orbite autour d'un point — plus de rayon/hauteur d'orbite ici,
+      // juste une position + un regard (lacet=orbit.theta, tangage=lookPitch).
+      const EYE_HEIGHT = 0.75;
+      camera.position.set(player.position.x, EYE_HEIGHT, player.position.z);
+      camera.lookAt(
+        camera.position.x - Math.sin(orbitSmooth.theta) * Math.cos(lookPitch),
+        camera.position.y + Math.sin(lookPitch),
+        camera.position.z - Math.cos(orbitSmooth.theta) * Math.cos(lookPitch)
+      );
+    } else if (playerActive && thirdPerson) {
+      // Vue 3e personne : orbite classique (souris → thêta/phi) mais
+      // centrée sur le bonhomme au lieu de l'origine/un bâtiment.
+      const targetPhi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi));
+      orbitSmooth.phi    += (targetPhi     - orbitSmooth.phi)    * FOCUS_LERP;
+      orbitSmooth.radius += (PLAYER_RADIUS - orbitSmooth.radius) * FOCUS_LERP;
+      camera.position.x = player.position.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
+      camera.position.y = 0.9 + orbitSmooth.radius * Math.cos(orbitSmooth.phi);
+      camera.position.z = player.position.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
+      camera.lookAt(player.position.x, 0.9, player.position.z);
+    } else {
+      // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
+      const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55 + zoomOffset;
+      const scrollPhiTarget    = focused ? orbit.phi    : Math.max(0.2, orbit.phi - scrollZoom * 0.35);
+      orbitSmooth.phi    += (scrollPhiTarget    - orbitSmooth.phi)    * (focused ? FOCUS_LERP : 0.035);
+      orbitSmooth.radius += (scrollRadiusTarget - orbitSmooth.radius) * (focused ? FOCUS_LERP : 0.035);
+      focusTargetSmooth.lerp(focusTarget, FOCUS_LERP);
+
+      camera.position.x = orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
+      camera.position.y = orbitSmooth.radius * Math.cos(orbitSmooth.phi);
+      camera.position.z = orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
+      camera.lookAt(focusTargetSmooth);
+    }
 
     // La ville ne tourne plus sur elle-même : les bâtiments restent à leur
     // place (les particules gardent une légère rotation, purement décorative).
@@ -1581,6 +2386,18 @@
       tr.mesh.position.x = tr.centerX + s * tr.rangeX;
       tr.mesh.position.z = tr.centerZ + s * tr.rangeZ;
     });
+    // Rames de la ligne annulaire (parcourent tout le circuit, même sens)
+    updateLoopTrains();
+
+    // Feux de circulation + voitures
+    const trafficPhase = getTrafficPhase(t);
+    updateTrafficLights(trafficPhase);
+    updateMovingCars(trafficPhase);
+
+    // Piétons, cyclistes, oiseaux des parcs
+    updateMovingPedestrians();
+    updateMovingCyclists();
+    updateParkBirds();
 
     // Mini-carte (canvas 2D, une frame sur 4 seulement — inutile de la
     // redessiner à 60fps pour un simple point qui bouge doucement)
@@ -1725,6 +2542,51 @@
       if (active) closeMobileMenu();
     });
   }
+
+  /* ── Construction (simulation) ── */
+  const simBuildToggle = document.getElementById('sim-build-toggle');
+  const simBuildMenu = document.getElementById('sim-build-menu');
+
+  function updateBuildMenu() {
+    if (!simBuildMenu) return;
+    simBuildMenu.innerHTML = '';
+    Object.keys(SIM_BUILDING_TYPES).forEach(type => {
+      const info = SIM_BUILDING_TYPES[type];
+      const affordable = sim.money >= info.cost;
+      const active = selectedBuildType === type;
+      const btn = document.createElement('button');
+      btn.className = 'w-full flex justify-between px-2 py-1.5 rounded font-mono text-[9px] uppercase tracking-wider transition-colors '
+        + (active
+            ? 'bg-[#00f0ff]/20 border border-[#00f0ff]/50 text-[#dbfcff]'
+            : 'bg-[#2e3447]/40 border border-[#849495]/20 text-[#849495] hover:border-[#00f0ff]/40')
+        + (affordable ? '' : ' opacity-40 pointer-events-none');
+      btn.innerHTML = `<span>${info.label}</span><span>$${info.cost}</span>`;
+      btn.addEventListener('click', () => {
+        selectedBuildType = (selectedBuildType === type) ? null : type;
+        updateBuildMenu();
+      });
+      simBuildMenu.appendChild(btn);
+    });
+  }
+
+  function exitBuildMode() {
+    buildMode = false;
+    selectedBuildType = null;
+    if (simBuildMenu) simBuildMenu.classList.add('hidden');
+    lotMarkerMeshes.forEach(m => { if (m.visible) m.material = lotMat; });
+    updateBuildMenu();
+  }
+
+  if (simBuildToggle) {
+    simBuildToggle.addEventListener('click', () => {
+      buildMode = !buildMode;
+      if (!buildMode) { selectedBuildType = null; }
+      if (simBuildMenu) simBuildMenu.classList.toggle('hidden', !buildMode);
+      lotMarkerMeshes.forEach(m => { if (m.visible) m.material = buildMode ? lotMatActive : lotMat; });
+      updateBuildMenu();
+    });
+  }
+  updateBuildMenu();
 
   /* ── Mode Jour / Nuit ── */
   const daynightToggle = document.getElementById('daynight-toggle');
