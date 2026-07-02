@@ -116,6 +116,10 @@
     letter-spacing: 0.25em;
   }
 
+  /* Joystick virtuel du mode piéton */
+  #walk-joystick { touch-action: none; }
+  #walk-joystick .joy-knob { transition: transform 0.08s linear; }
+
   /* Mobile : effets 3D plus doux + tailles ajustées */
   @media (max-width: 768px) {
     .reveal-3d {

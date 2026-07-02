@@ -1922,8 +1922,9 @@
   /* ── Balade libre (ZQSD/WASD ou flèches) — seulement en "Vue ville" ──
      Déplace le point regardé (focusTarget) dans le sens où la caméra
      regarde actuellement, au lieu d'un simple pivot autour d'un point
-     fixe. Un bonhomme (même rig articulé que les piétons, réutilise
-     pedTorsoGeo/pedHeadGeo/pedLimb) apparaît à cet endroit dès la
+     fixe. Un bonhomme (rig articulé dédié, plus détaillé que les
+     piétons de fond) apparaît à cet endroit via le bouton "Explorer à
+     pied" ou dès la
      première touche pressée, marche vraiment (jambes/bras animés,
      orienté dans le sens du déplacement), et la caméra se rapproche
      pour le suivre en vue 3ᵉ personne au lieu de rester à la distance
@@ -1933,19 +1934,83 @@
   window.addEventListener('keyup',   (e) => { walkKeys[e.key.toLowerCase()] = false; });
   const WALK_SPEED = 0.3;
 
-  const playerMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.3, roughness: 0.6 });
+  /* ── Bonhomme joueur (version détaillée) ──
+     Silhouette cyberpunk distincte des piétons de fond : combinaison
+     sombre, visière + cœur lumineux cyan, antenne rose (seul accent,
+     comme le reste du site), mains/bottes lumineuses, ombre portée et
+     anneau de position au sol pour bien le repérer en vue 3e personne. */
+  const playerBodyMat   = new THREE.MeshStandardMaterial({ color: 0x131c30, roughness: 0.5, metalness: 0.35, emissive: 0x00f0ff, emissiveIntensity: 0.05 });
+  const playerAccentMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 1.0, roughness: 0.35 });
+  const playerPinkMat   = new THREE.MeshStandardMaterial({ color: 0xff44cc, emissive: 0xff44cc, emissiveIntensity: 0.9, roughness: 0.35 });
+
   const player = new THREE.Group();
-  const playerTorso = new THREE.Mesh(pedTorsoGeo, playerMat); playerTorso.position.y = 0.33; player.add(playerTorso);
-  const playerHead  = new THREE.Mesh(pedHeadGeo, playerMat);  playerHead.position.y  = 0.52; player.add(playerHead);
-  const playerLegL = pedLimb(playerMat, 0.22); playerLegL.position.x = -0.045; player.add(playerLegL);
-  const playerLegR = pedLimb(playerMat, 0.22); playerLegR.position.x =  0.045; player.add(playerLegR);
-  const playerArmL = pedLimb(playerMat, 0.42); playerArmL.position.x = -0.11;  player.add(playerArmL);
-  const playerArmR = pedLimb(playerMat, 0.42); playerArmR.position.x =  0.11;  player.add(playerArmR);
+
+  // Torse (épaules plus larges que la taille)
+  const playerTorso = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.075, 0.26, 8), playerBodyMat);
+  playerTorso.position.y = 0.34;
+  player.add(playerTorso);
+  // Cœur lumineux sur la poitrine
+  const playerCore = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 8), playerAccentMat);
+  playerCore.position.set(0, 0.385, 0.085);
+  player.add(playerCore);
+  // Épaulettes
+  [-1, 1].forEach(s => {
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.03, 0.07), playerBodyMat);
+    pad.position.set(s * 0.115, 0.455, 0);
+    player.add(pad);
+  });
+  // Tête = groupe (crâne + visière + antenne) pour pouvoir la pencher en marchant
+  const playerHead = new THREE.Group();
+  playerHead.position.y = 0.56;
+  const playerSkull = new THREE.Mesh(new THREE.SphereGeometry(0.078, 10, 10), playerBodyMat);
+  playerHead.add(playerSkull);
+  const playerVisor = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.032, 0.028), playerAccentMat);
+  playerVisor.position.set(0, 0.012, 0.066); // face avant (+Z = sens de marche)
+  playerHead.add(playerVisor);
+  const playerAntenna = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.09, 4), playerPinkMat);
+  playerAntenna.position.set(-0.05, 0.09, -0.02);
+  playerAntenna.rotation.z = 0.25;
+  playerHead.add(playerAntenna);
+  player.add(playerHead);
+
+  // Membres : mêmes pivots hanche/épaule que les piétons, géométrie dédiée
+  const playerLimbGeo = new THREE.CylinderGeometry(0.03, 0.023, 0.22, 6);
+  function playerLimb(hipY) {
+    const pivot = new THREE.Group();
+    pivot.position.y = hipY;
+    const mesh = new THREE.Mesh(playerLimbGeo, playerBodyMat);
+    mesh.position.y = -0.11;
+    pivot.add(mesh);
+    // Extrémité lumineuse (main / botte)
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), playerAccentMat);
+    tip.position.y = -0.215;
+    pivot.add(tip);
+    return pivot;
+  }
+  const playerLegL = playerLimb(0.22); playerLegL.position.x = -0.05;  player.add(playerLegL);
+  const playerLegR = playerLimb(0.22); playerLegR.position.x =  0.05;  player.add(playerLegR);
+  const playerArmL = playerLimb(0.44); playerArmL.position.x = -0.125; player.add(playerArmL);
+  const playerArmR = playerLimb(0.44); playerArmR.position.x =  0.125; player.add(playerArmR);
+
+  // Ombre douce + anneau de position au sol (suivent le bonhomme)
+  const playerShadow = new THREE.Mesh(
+    new THREE.CircleGeometry(0.22, 16),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false })
+  );
+  playerShadow.rotation.x = -Math.PI / 2;
+  playerShadow.position.y = 0.012;
+  player.add(playerShadow);
+  const playerRingMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+  const playerRing = new THREE.Mesh(new THREE.RingGeometry(0.26, 0.3, 24), playerRingMat);
+  playerRing.rotation.x = -Math.PI / 2;
+  playerRing.position.y = 0.02;
+  player.add(playerRing);
+
   player.scale.setScalar(1.4); // un peu plus grand que les piétons de fond, pour bien le repérer
   player.visible = false;
   scene.add(player);
 
-  let playerActive = false; // devient vrai à la 1ère touche de marche, remis à false en quittant "Vue ville"
+  let playerActive = false; // devient vrai au clic sur "Explorer à pied" ou à la 1ère touche de marche
   let playerFacing = 0;
   let playerWalkPhase = 0;
   let lookPitch = 0; // regard haut/bas en vue 1re personne (pas la même chose que orbit.phi)
@@ -1955,8 +2020,13 @@
   // apparaître, et on peut passer en 1re personne ensuite (bouton/touche V).
   let thirdPerson = true;
   const PLAYER_RADIUS = 9; // distance de la caméra en vue 3e personne
+  const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
-  const viewModeToggle = document.getElementById('view-mode-toggle');
+  const viewModeToggle    = document.getElementById('view-mode-toggle');
+  const walkModeBtn       = document.getElementById('walk-mode-btn');
+  const walkControlsPanel = document.getElementById('walk-controls-panel');
+  const walkJoystick      = document.getElementById('walk-joystick');
+
   function toggleViewMode() {
     thirdPerson = !thirdPerson;
     player.visible = thirdPerson;
@@ -1966,13 +2036,100 @@
     if (e.key.toLowerCase() === 'v' && playerActive) toggleViewMode();
   });
 
+  /* Le bouton "Explorer à pied" rend le mode découvrable : avant, il
+     fallait deviner qu'une touche de marche l'activait. Visible seulement
+     en Vue ville tant que le bonhomme n'est pas actif. Une fois actif :
+     panneau de contrôles sur desktop, joystick virtuel sur mobile. */
+  function refreshWalkUI() {
+    const inCity = isCityOnlyView();
+    if (walkModeBtn)       walkModeBtn.classList.toggle('hidden', !inCity || playerActive);
+    if (walkControlsPanel) walkControlsPanel.classList.toggle('hidden', !inCity || !playerActive || IS_TOUCH);
+    if (walkJoystick)      walkJoystick.classList.toggle('hidden', !inCity || !playerActive || !IS_TOUCH);
+    if (viewModeToggle)    viewModeToggle.classList.toggle('hidden', !inCity || !playerActive);
+  }
+  window.refreshWalkUI = refreshWalkUI; // aussi appelé par le bouton "Vue ville"
+
+  function activatePlayer() {
+    if (playerActive) return;
+    playerActive = true;
+    player.visible = thirdPerson; // caché en 1re personne, visible en 3e
+    player.position.set(focusTarget.x, 0, focusTarget.z);
+    refreshWalkUI();
+  }
+  function deactivatePlayer() {
+    playerActive = false;
+    player.visible = false;
+    lookPitch = 0;
+    focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant le mode piéton
+    refreshWalkUI();
+  }
+  if (walkModeBtn) walkModeBtn.addEventListener('click', activatePlayer);
+  document.querySelectorAll('.walk-exit-btn').forEach(b => b.addEventListener('click', deactivatePlayer));
+
+  /* ── Collisions ──
+     Le bonhomme ne traverse plus les bâtiments (boîtes 1.8×1.8 centrées
+     sur group.position) et reste dans les limites du monde (la rivière
+     commence vers z≈49, d'où le plafond à 46). Poussée hors de la boîte
+     par l'axe le moins enfoncé : on "glisse" le long des murs au lieu de
+     rester bloqué net. ~81 bâtiments testés par frame = négligeable. */
+  const PLAYER_CLEARANCE = 1.25;
+  function resolvePlayerCollisions(nx, nz) {
+    nx = Math.max(-68, Math.min(68, nx));
+    nz = Math.max(-68, Math.min(46, nz));
+    for (let i = 0; i < buildings.length; i++) {
+      const b = buildings[i].position;
+      const dx = nx - b.x, dz = nz - b.z;
+      if (Math.abs(dx) < PLAYER_CLEARANCE && Math.abs(dz) < PLAYER_CLEARANCE) {
+        if (Math.abs(dx) > Math.abs(dz)) nx = b.x + (dx >= 0 ? 1 : -1) * PLAYER_CLEARANCE;
+        else                             nz = b.z + (dz >= 0 ? 1 : -1) * PLAYER_CLEARANCE;
+      }
+    }
+    return { x: nx, z: nz };
+  }
+
+  /* ── Joystick virtuel (mobile) ──
+     Renvoie un vecteur analogique (-1..1) fusionné avec le clavier dans
+     updateWalkControls. touch-action:none sur l'élément + preventDefault
+     pour ne jamais déclencher le scroll ou la rotation caméra du canvas. */
+  const joyInput = { f: 0, r: 0 };
+  (function initJoystick() {
+    if (!walkJoystick) return;
+    const knob = walkJoystick.querySelector('.joy-knob');
+    const RANGE = 34;
+    let touchId = null, cx = 0, cy = 0;
+    function setKnob(dx, dy) { knob.style.transform = `translate(${dx}px, ${dy}px)`; }
+    walkJoystick.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const tch = e.changedTouches[0];
+      touchId = tch.identifier;
+      const r = walkJoystick.getBoundingClientRect();
+      cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+    }, { passive: false });
+    walkJoystick.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      for (const tch of e.changedTouches) {
+        if (tch.identifier !== touchId) continue;
+        let dx = tch.clientX - cx, dy = tch.clientY - cy;
+        const len = Math.hypot(dx, dy);
+        if (len > RANGE) { dx = dx / len * RANGE; dy = dy / len * RANGE; }
+        setKnob(dx, dy);
+        joyInput.r = dx / RANGE;
+        joyInput.f = -dy / RANGE;
+      }
+    }, { passive: false });
+    function endJoy(e) {
+      for (const tch of e.changedTouches) {
+        if (tch.identifier !== touchId) continue;
+        touchId = null; setKnob(0, 0); joyInput.f = 0; joyInput.r = 0;
+      }
+    }
+    walkJoystick.addEventListener('touchend', endJoy);
+    walkJoystick.addEventListener('touchcancel', endJoy);
+  })();
+
   function updateWalkControls() {
     if (!isCityOnlyView()) {
-      if (playerActive) focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant "Vue ville"
-      player.visible = false;
-      playerActive = false;
-      lookPitch = 0;
-      if (viewModeToggle) viewModeToggle.classList.add('hidden');
+      if (playerActive || (walkModeBtn && !walkModeBtn.classList.contains('hidden'))) deactivatePlayer();
       return;
     }
     if (focused) return;
@@ -1982,40 +2139,60 @@
     if (walkKeys['s'] || walkKeys['arrowdown'])                  fInput -= 1;
     if (walkKeys['d'] || walkKeys['arrowright'])                 rInput += 1;
     if (walkKeys['a'] || walkKeys['q'] || walkKeys['arrowleft']) rInput -= 1;
-    const moving = fInput !== 0 || rInput !== 0;
+    fInput += joyInput.f;
+    rInput += joyInput.r;
+    const moving  = Math.hypot(fInput, rInput) > 0.08;
+    const running = !!walkKeys['shift'];
 
     if (moving) {
-      if (!playerActive) {
-        playerActive = true;
-        player.visible = thirdPerson; // caché en 1re personne, visible en 3e
-        player.position.set(focusTarget.x, 0, focusTarget.z);
-        if (viewModeToggle) viewModeToggle.classList.remove('hidden');
-      }
+      if (!playerActive) activatePlayer();
+      const speed = WALK_SPEED * (running ? 1.9 : 1);
       const fx = -Math.sin(orbit.theta), fz = -Math.cos(orbit.theta);
       const rx = -fz, rz = fx;
-      const len = Math.hypot(fInput, rInput);
+      const len = Math.max(1, Math.hypot(fInput, rInput)); // analogique : jamais amplifié, jamais > 1
       const moveX = (fx * fInput + rx * rInput) / len;
       const moveZ = (fz * fInput + rz * rInput) / len;
-      focusTarget.x += moveX * WALK_SPEED;
-      focusTarget.z += moveZ * WALK_SPEED;
+      const solved = resolvePlayerCollisions(
+        focusTarget.x + moveX * speed,
+        focusTarget.z + moveZ * speed
+      );
+      focusTarget.x = solved.x;
+      focusTarget.z = solved.z;
 
-      playerFacing = Math.atan2(moveX, moveZ);
-      playerWalkPhase += 0.25;
-      const swing = Math.sin(playerWalkPhase) * 0.6;
+      // Rotation lissée vers la direction de marche (plus de demi-tour sec)
+      const targetFacing = Math.atan2(moveX, moveZ);
+      let dFace = targetFacing - playerFacing;
+      if (dFace >  Math.PI) dFace -= Math.PI * 2;
+      if (dFace < -Math.PI) dFace += Math.PI * 2;
+      playerFacing += dFace * 0.22;
+
+      playerWalkPhase += running ? 0.36 : 0.25;
+      const amp = running ? 0.8 : 0.6;
+      const swing = Math.sin(playerWalkPhase) * amp;
       playerLegL.rotation.x =  swing; playerLegR.rotation.x = -swing;
-      playerArmL.rotation.x = -swing; playerArmR.rotation.x =  swing;
+      playerArmL.rotation.x = -swing * 0.85; playerArmR.rotation.x =  swing * 0.85;
+      // Rebond du corps + inclinaison vers l'avant (plus marquée en courant)
+      player.position.y = Math.abs(Math.sin(playerWalkPhase)) * (running ? 0.045 : 0.028);
+      playerTorso.rotation.x += ((running ? 0.16 : 0.08) - playerTorso.rotation.x) * 0.15;
+      playerHead.rotation.x = playerTorso.rotation.x * 0.5;
     } else if (playerActive) {
-      // Position à l'arrêt (bras/jambes reviennent au repos)
+      // Retour au repos (membres, inclinaison, rebond) + légère respiration
       playerLegL.rotation.x += (0 - playerLegL.rotation.x) * 0.2;
       playerLegR.rotation.x += (0 - playerLegR.rotation.x) * 0.2;
       playerArmL.rotation.x += (0 - playerArmL.rotation.x) * 0.2;
       playerArmR.rotation.x += (0 - playerArmR.rotation.x) * 0.2;
+      playerTorso.rotation.x += (0 - playerTorso.rotation.x) * 0.15;
+      playerHead.rotation.x  += (0 - playerHead.rotation.x)  * 0.15;
+      player.position.y += (0 - player.position.y) * 0.2;
+      playerTorso.position.y = 0.34 + Math.sin(t * 2.2) * 0.004;
     }
 
     if (playerActive) {
       player.position.x = focusTarget.x;
       player.position.z = focusTarget.z;
       player.rotation.y = playerFacing;
+      // Anneau de position qui pulse doucement
+      playerRingMat.opacity = 0.35 + 0.2 * Math.sin(t * 3);
     }
   }
 
@@ -2408,6 +2585,36 @@
   }
   animate();
 
+  /* ── Écran de chargement ──
+     Toute la ville est générée procéduralement (aucun asset externe) :
+     le gros du temps passe dans l'init synchrone ci-dessus, pendant
+     laquelle l'overlay est déjà affiché. On anime ensuite la barre sur
+     les toutes premières frames rendues, puis on fond l'écran —
+     l'utilisateur ne voit jamais une ville "à moitié construite". */
+  (function runLoadingScreen() {
+    const screenEl = document.getElementById('loading-screen');
+    const bar      = document.getElementById('loading-bar');
+    const status   = document.getElementById('loading-status');
+    if (!screenEl || !bar) return;
+    const steps = [
+      'Génération des bâtiments…',
+      'Réseau routier & métro…',
+      'Population & trafic…',
+      'Synchronisation neurale…',
+    ];
+    let f = 0;
+    const TOTAL = 55;
+    (function tick() {
+      f++;
+      const p = Math.min(1, f / TOTAL);
+      bar.style.width = (p * 100).toFixed(1) + '%';
+      if (status) status.textContent = steps[Math.min(steps.length - 1, Math.floor(p * steps.length))];
+      if (p < 1) { requestAnimationFrame(tick); return; }
+      screenEl.style.opacity = '0';
+      setTimeout(() => screenEl.remove(), 750);
+    })();
+  })();
+
   /* ── Réaction événements UI ── */
   window.addEventListener('buildingSelected', (e) => {
     const job = e.detail.job;
@@ -2540,6 +2747,7 @@
       eyeIcon.classList.toggle('hidden', active);
       eyeOffIcon.classList.toggle('hidden', !active);
       if (active) closeMobileMenu();
+      if (window.refreshWalkUI) window.refreshWalkUI();
     });
   }
 

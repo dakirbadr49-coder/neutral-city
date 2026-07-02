@@ -4,6 +4,8 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>NEURAL_CITY | Exploration Professionnelle</title>
+<meta name="description" content="NEURAL_CITY — ville cyberpunk 3D interactive en Three.js. Chaque bâtiment représente une technologie. Explore la ville à pied, survole les secteurs, découvre le stack."/>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23070d1f'/%3E%3Cpath d='M16 5 26 11v10L16 27 6 21V11z' fill='none' stroke='%2300f0ff' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23ff44cc'/%3E%3C/svg%3E"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -52,6 +54,17 @@ tailwind.config = {
 <link rel="stylesheet" href="style.css"/>
 </head>
 <body class="text-on-surface">
+
+<!-- ═══════════════════════════════════════════════
+     ÉCRAN DE CHARGEMENT — retiré du DOM une fois la ville prête
+════════════════════════════════════════════════ -->
+<div id="loading-screen" class="fixed inset-0 z-[100] bg-[#070d1f] flex flex-col items-center justify-center gap-6 transition-opacity duration-700">
+  <div class="font-mono text-[#00dbe9] tracking-[0.4em] text-lg font-bold animate-pulse">◈ NEURAL_CITY</div>
+  <div class="w-56 h-1 bg-[#00f0ff]/10 rounded-full overflow-hidden">
+    <div id="loading-bar" class="h-full bg-[#00f0ff] rounded-full shadow-[0_0_10px_#00f0ff]" style="width:0%; transition: width .25s ease;"></div>
+  </div>
+  <div id="loading-status" class="font-mono text-[9px] uppercase tracking-widest text-[#849495]">Initialisation…</div>
+</div>
 
 <!-- ═══════════════════════════════════════════════
      THREE.JS CANVAS — couche 0
@@ -396,6 +409,34 @@ tailwind.config = {
      En dehors de hud-fade, comme le bouton "vue ville", pour rester visible. -->
 <div class="fixed bottom-10 left-3 md:left-6 z-[60] rounded-lg border border-[#00f0ff]/25 bg-[#0c1324]/75 backdrop-blur-md p-1.5">
   <canvas id="minimap-canvas" height="112" width="112"></canvas>
+</div>
+
+<!-- Bouton "Explorer à pied" : visible uniquement en Vue ville, tant que
+     le bonhomme n'est pas actif. C'est lui qui rend le mode découvrable. -->
+<button id="walk-mode-btn"
+        class="hidden fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] px-6 py-3 rounded-lg
+               font-mono text-xs font-bold tracking-widest
+               bg-[#00f0ff] text-[#00363a] shadow-[0_0_18px_#00f0ff]
+               hover:scale-[1.04] active:scale-[0.96] transition-transform">
+  ⇧ EXPLORER À PIED
+</button>
+
+<!-- Panneau contrôles du mode piéton (desktop uniquement) -->
+<div id="walk-controls-panel" class="hidden fixed bottom-10 right-3 md:right-6 z-[60] glass-panel rounded-xl px-4 py-3 font-mono text-[10px] text-[#849495] leading-relaxed">
+  <div class="text-[#00f0ff] font-bold tracking-widest mb-1.5">// MODE_PIÉTON</div>
+  <div><span class="text-[#dbfcff]">ZQSD / flèches</span> — marcher</div>
+  <div><span class="text-[#dbfcff]">Shift</span> — courir</div>
+  <div><span class="text-[#dbfcff]">V</span> — vue 1<sup>re</sup> / 3<sup>e</sup> pers.</div>
+  <div><span class="text-[#dbfcff]">Glisser</span> — tourner la caméra</div>
+  <button class="walk-exit-btn mt-2 w-full text-center px-2 py-1 rounded border border-[#ff44cc]/40 text-[#ff44cc] hover:bg-[#ff44cc]/10 transition-colors">✕ QUITTER</button>
+</div>
+
+<!-- Joystick virtuel du mode piéton (mobile uniquement) -->
+<div id="walk-joystick" class="hidden fixed bottom-24 right-6 z-[60] select-none touch-none">
+  <div class="relative w-24 h-24 rounded-full border border-[#00f0ff]/30 bg-[#0c1324]/60 backdrop-blur-md flex items-center justify-center">
+    <div class="joy-knob w-10 h-10 rounded-full bg-[#00f0ff]/25 border border-[#00f0ff]/70 shadow-[0_0_12px_rgba(0,240,255,0.5)]"></div>
+    <button class="walk-exit-btn absolute -top-2 -left-2 w-7 h-7 rounded-full border border-[#ff44cc]/50 bg-[#0c1324]/90 text-[#ff44cc] text-xs leading-none">✕</button>
+  </div>
 </div>
 
 <!-- Pluie décorative -->
