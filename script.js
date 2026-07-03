@@ -2252,6 +2252,16 @@
       e.stopPropagation();
       toggleCarSeat();
     });
+    // touchend en plus de click : sur certains mobiles, le clic de survol
+    // en 300ms de délai après un tap se fait mal absorber quand le bouton
+    // change de visibilité/texte à chaque frame (comme ici) — touchend
+    // répond immédiatement. preventDefault pour ne pas déclencher aussi
+    // le click "fantôme" juste après.
+    carPrompt.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCarSeat();
+    }, { passive: false });
   }
 
   function updateCarControls() {
@@ -3159,14 +3169,29 @@
   function touchDist(t0, t1) {
     return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
   }
+  // e.touches liste TOUS les doigts posés sur la page, pas seulement ceux
+  // sur le canvas (chaque Touch a son propre .target qui dit où IL a
+  // commencé) — sans ce filtre, un doigt sur le joystick (mode piéton) +
+  // un doigt sur le canvas pour regarder autour de soi étaient comptés
+  // comme 2 doigts SUR le canvas et déclenchaient un pincement/zoom au
+  // lieu de faire tourner la caméra, qui du coup ne répondait jamais.
+  function touchesOnCanvas(touchList) {
+    const arr = [];
+    for (let i = 0; i < touchList.length; i++) {
+      if (touchList[i].target === canvas) arr.push(touchList[i]);
+    }
+    return arr;
+  }
 
   canvas.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 2) {
-      pinchStartDist = touchDist(e.touches[0], e.touches[1]);
+    const onCanvas = touchesOnCanvas(e.touches);
+    if (onCanvas.length === 2) {
+      pinchStartDist = touchDist(onCanvas[0], onCanvas[1]);
       touchStart = null;
       return;
     }
     const t = e.changedTouches[0];
+    if (t.target !== canvas) return;
     touchStart = { x: t.clientX, y: t.clientY };
     touchMoved = false;
     if (isCityOnlyView() && focused) unfocus();
@@ -3174,15 +3199,16 @@
 
   canvas.addEventListener('touchmove', (e) => {
     if (!isCityOnlyView()) return;
-    if (e.touches.length === 2 && pinchStartDist) {
+    const onCanvas = touchesOnCanvas(e.touches);
+    if (onCanvas.length === 2 && pinchStartDist) {
       e.preventDefault();
-      const dist = touchDist(e.touches[0], e.touches[1]);
+      const dist = touchDist(onCanvas[0], onCanvas[1]);
       zoomOffset = Math.min(70, Math.max(-25, zoomOffset - (dist - pinchStartDist) * 0.08));
       pinchStartDist = dist;
       return;
     }
-    if (!touchStart || e.touches.length !== 1) return;
-    const t = e.touches[0];
+    if (!touchStart || onCanvas.length !== 1) return;
+    const t = onCanvas[0];
     const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
     if (Math.hypot(dx, dy) > 4) touchMoved = true;
     e.preventDefault();
