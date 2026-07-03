@@ -1285,11 +1285,42 @@
     }
   }
 
-  // Une école + deux parcs dans le nouvel anneau extérieur (±38/±44),
-  // hors des avenues, donc aucun risque de collision avec les routes
+  // Forêt : pas de pelouse entretenue comme un parc, juste une zone
+  // boisée dense (beaucoup plus d'arbres, dispersés sur une zone plus
+  // grande) — une autre sorte d'espace vert pour agrandir la ville.
+  function createForest(x, z, size, count) {
+    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), new THREE.MeshStandardMaterial({
+      color: 0x0f3d24, emissive: 0x0a5c2e, emissiveIntensity: 1.1
+    }));
+    beacon.position.set(x, 3, z);
+    scene.add(beacon);
+    for (let i = 0; i < count; i++) {
+      createTree(x + (Math.random() - 0.5) * size, z + (Math.random() - 0.5) * size);
+    }
+    const signTex = makeSignTexture('FORÊT_URBAINE', '#0a5c2e');
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.75), new THREE.MeshBasicMaterial({ map: signTex, transparent: true }));
+    sign.position.set(x, 1.4, z + size / 2 + 0.3);
+    scene.add(sign);
+    const signBack = sign.clone();
+    signBack.rotation.y = Math.PI;
+    signBack.position.z = z - size / 2 - 0.3;
+    scene.add(signBack);
+  }
+
+  // Une école + trois parcs dans le nouvel anneau extérieur (±38/±44),
+  // hors des avenues, donc aucun risque de collision avec les routes.
+  // Le 3e parc (39,24) est un nouveau coin resté vide entre le parc est
+  // et l'avenue 32/44 — x=39 (pas 38) pour dégager l'anneau de magasins
+  // à 34.3 (un magasin y a une emprise jusqu'à x=35.1).
   createSchool(-38, 8, Math.PI / 2);
   createPark(38, 8);
   createPark(-8, -38);
+  createPark(39, 24);
+  // Forêt : coin resté vide au sud de l'école, dans le même couloir
+  // dégagé entre les avenues -32/-44 (zone x∈[-42.675,-33.325]) qu'elle
+  // et le chantier municipal utilisent déjà. size=7.2 (marge ≥1 unité de
+  // chaque avenue une fois centrée sur x=-38, z=-8).
+  createForest(-38, -8, 7.2, 20);
 
   /* ── Oiseaux de parc ──
      Remplacent les animaux au sol (préférence utilisateur) : volent bas
@@ -1312,7 +1343,7 @@
       flapPhase: Math.random() * Math.PI * 2,
     });
   }
-  [[38, 8], [-8, -38]].forEach(([px, pz]) => {
+  [[38, 8], [-8, -38], [39, 24]].forEach(([px, pz]) => {
     for (let i = 0; i < 3; i++) createParkBird(px, pz);
   });
   function updateParkBirds() {
@@ -2035,7 +2066,7 @@
   let thirdPerson = true;
   let playerLookX = 0; // -0.5..0.5, position souris par rapport au centre — tourne en continu
   const PLAYER_TURN_RATE = 0.05;
-  const PLAYER_RADIUS = 9; // distance de la caméra en vue 3e personne
+  const PLAYER_RADIUS = 5.5; // distance de la caméra en vue 3e personne (rapprochée, était 9)
   const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
   const viewModeToggle    = document.getElementById('view-mode-toggle');
@@ -2169,7 +2200,6 @@
     carFacing = car.group.rotation.y;
     chaseThetaSmooth = carFacing - Math.PI / 2; // évite un grand balayage de caméra à la 1re image
     player.visible = false;
-    if (carPrompt) carPrompt.classList.add('hidden');
   }
   function exitCar() {
     if (!drivingCar) return;
@@ -2185,16 +2215,44 @@
     drivingCar = null;
   }
 
-  window.addEventListener('keydown', (e) => {
-    // e.repeat : sans ça, laisser la touche enfoncée (répétition clavier
-    // du système) ferait rentrer/sortir de la voiture en boucle très vite.
-    if (e.repeat || e.key.toLowerCase() !== 'e' || !playerActive) return;
+  // Affiche/texte du bouton #car-prompt : "MONTER" quand une voiture est
+  // à portée (et qu'on n'est pas déjà dedans), "DESCENDRE" en conduite —
+  // visible et tapable dans les deux cas, pas seulement au clavier.
+  function updateCarPromptUI() {
+    if (!carPrompt) return;
+    if (drivingCar) {
+      carPrompt.innerHTML = 'APPUIE SUR <span class="text-[#dbfcff]">E</span> / TAPE POUR DESCENDRE';
+      carPrompt.classList.remove('hidden');
+    } else if (nearestCar()) {
+      carPrompt.innerHTML = 'APPUIE SUR <span class="text-[#dbfcff]">E</span> / TAPE POUR MONTER';
+      carPrompt.classList.remove('hidden');
+    } else {
+      carPrompt.classList.add('hidden');
+    }
+  }
+
+  // Partagé entre la touche E (desktop) et le bouton tactile #car-prompt
+  // (mobile — "E" ne veut rien dire sur un téléphone, il fallait un bouton).
+  function toggleCarSeat() {
+    if (!playerActive) return;
     if (drivingCar) exitCar();
     else {
       const car = nearestCar();
       if (car) enterCar(car);
     }
+  }
+  window.addEventListener('keydown', (e) => {
+    // e.repeat : sans ça, laisser la touche enfoncée (répétition clavier
+    // du système) ferait rentrer/sortir de la voiture en boucle très vite.
+    if (e.repeat || e.key.toLowerCase() !== 'e') return;
+    toggleCarSeat();
   });
+  if (carPrompt) {
+    carPrompt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCarSeat();
+    });
+  }
 
   function updateCarControls() {
     let fInput = 0, turnInput = 0;
@@ -2344,6 +2402,7 @@
     if (focused) return;
 
     if (playerActive) checkMissionProgress();
+    updateCarPromptUI();
 
     if (drivingCar) {
       updateCarControls();
@@ -2358,7 +2417,6 @@
     // ci-dessus) : la caméra y est verrouillée derrière le véhicule, pas
     // pilotée par la souris.
     if (playerLookX !== 0) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
-    if (carPrompt) carPrompt.classList.toggle('hidden', !nearestCar());
 
     let fInput = 0, rInput = 0;
     if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
@@ -2384,9 +2442,14 @@
       const len = Math.max(1, Math.hypot(fInput, rInput)); // analogique : jamais amplifié, jamais > 1
       playerMoveDirX = (fx * fInput + rx * rInput) / len; // dernière direction visée, réutilisée pendant la décélération
       playerMoveDirZ = (fz * fInput + rz * rInput) / len;
+    }
 
-      // Rotation lissée vers la direction de marche (plus de demi-tour sec)
-      const targetFacing = Math.atan2(playerMoveDirX, playerMoveDirZ);
+    if (playerActive) {
+      // Le bonhomme s'oriente toujours dans le sens où regarde la caméra,
+      // même à l'arrêt — tourner la caméra tourne aussi le personnage,
+      // pas seulement en marchant. orbit.theta+π car la caméra est
+      // positionnée à l'opposé de "l'avant" (voir fx/fz ci-dessus).
+      const targetFacing = orbit.theta + Math.PI;
       let dFace = targetFacing - playerFacing;
       if (dFace >  Math.PI) dFace -= Math.PI * 2;
       if (dFace < -Math.PI) dFace += Math.PI * 2;

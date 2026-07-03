@@ -432,13 +432,14 @@ tailwind.config = {
   <button class="walk-exit-btn mt-2 w-full text-center px-2 py-1 rounded border border-[#ff44cc]/40 text-[#ff44cc] hover:bg-[#ff44cc]/10 transition-colors">✕ QUITTER</button>
 </div>
 
-<!-- Invite contextuelle : apparaît quand le bonhomme est assez près d'une
-     voiture pour y monter (montée/descente gérées en JS via la touche E). -->
-<div id="car-prompt" class="hidden fixed bottom-1/3 left-1/2 -translate-x-1/2 z-[60]
-                            glass-panel rounded-lg px-3 py-1.5 font-mono text-[10px]
-                            text-[#00f0ff] tracking-widest whitespace-nowrap">
-  APPUIE SUR <span class="text-[#dbfcff]">E</span> POUR MONTER
-</div>
+<!-- Invite/bouton "monter en voiture" — un vrai <button>, tapable au doigt
+     sur mobile (pas seulement la touche E, inutilisable sur téléphone).
+     Le texte ("MONTER"/"DESCENDRE") est mis à jour en JS selon l'état. -->
+<button id="car-prompt" class="hidden fixed bottom-1/3 left-1/2 -translate-x-1/2 z-[60]
+                               appearance-none glass-panel rounded-lg px-4 py-2 font-mono text-[10px]
+                               text-[#00f0ff] tracking-widest whitespace-nowrap">
+  APPUIE SUR <span class="text-[#dbfcff]">E</span> / TAPE POUR MONTER
+</button>
 
 <!-- Mission en cours : visible tant que le bonhomme est actif (marche ou
      conduite). Donne un but concret au lieu de juste se balader. -->
