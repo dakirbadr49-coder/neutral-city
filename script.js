@@ -2300,12 +2300,37 @@
      directement dans sim.money (le même argent que le panneau Ville_Statut
      et la construction). Réutilise des lieux déjà existants dans la
      scène, donc aucune nouvelle coordonnée à vérifier. */
+  // Lieux réutilisés comme arrêts de taxi — tous déjà vérifiés dégagés
+  // (mêmes coordonnées que les missions marche/conduite et les landmarks).
+  const TAXI_STOPS = [
+    { x: -38,   z: 8 },    // école
+    { x: 38,    z: 8 },    // parc est
+    { x: -8,    z: -38 },  // parc sud
+    { x: 39,    z: 24 },   // parc nord-est
+    { x: 38,    z: -8 },   // stade
+    { x: 7.3,   z: 38 },   // gare est
+    { x: -23.3, z: 38 },   // gare ouest
+    { x: -38,   z: -8 },   // forêt
+  ];
+  let taxiPhase = 'pickup', taxiPickup = null, taxiDropoff = null, taxiRidesLeft = 0;
+  function pickNewTaxiRide() {
+    const a = TAXI_STOPS[Math.floor(Math.random() * TAXI_STOPS.length)];
+    let b;
+    do { b = TAXI_STOPS[Math.floor(Math.random() * TAXI_STOPS.length)]; } while (b === a);
+    taxiPickup = a;
+    taxiDropoff = b;
+    taxiPhase = 'pickup';
+  }
+
   const MISSIONS = [
     { type: 'walk',  x: -38,   z: 8,   label: "Va à pied jusqu'à l'école (CAMPUS_CODE)",             reward: 250 },
     { type: 'drive', x: 7.3,   z: 38,  label: 'Conduis une voiture jusqu\'à GARE_EST',                reward: 400 },
     { type: 'walk',  x: 38,    z: -8,  label: "Va à pied jusqu'au stade (ESPORT_ARENA)",              reward: 300 },
+    { type: 'taxi',  rides: 3, label: 'Mode taxi : va chercher 3 clients en voiture et dépose-les',   reward: 200 },
     { type: 'drive', x: -23.3, z: 38,  label: 'Conduis une voiture jusqu\'à GARE_OUEST',              reward: 400 },
     { type: 'walk',  x: -8,    z: -38, label: "Va à pied jusqu'au parc sud",                          reward: 250 },
+    { type: 'walk',  x: 39,    z: 24,  label: "Va à pied jusqu'au parc nord-est",                     reward: 250 },
+    { type: 'walk',  x: -38,   z: -8,  label: "Va à pied jusqu'à la forêt urbaine",                   reward: 250 },
     { type: 'build', x: -38,   z: -38, label: 'Construis un bâtiment dans le chantier municipal',     reward: 600 },
   ];
   let missionIndex = 0;
@@ -2334,6 +2359,7 @@
     }
     missionIndex++;
     missionStartBuildingCount = sim.buildings.length;
+    taxiRidesLeft = 0; // repart de zéro si le mode taxi revient plus tard dans la boucle
     updateMissionUI();
   }
 
@@ -2345,6 +2371,40 @@
         missionProgressEl.textContent = (sim.buildings.length - missionStartBuildingCount) + ' / 1 bâtiment';
       }
       if (sim.buildings.length > missionStartBuildingCount) completeMission(m);
+      return;
+    }
+
+    if (m.type === 'taxi') {
+      if (!drivingCar) {
+        if (missionProgressEl) missionProgressEl.textContent = '(monte dans une voiture — E)';
+        return;
+      }
+      if (taxiRidesLeft === 0) { taxiRidesLeft = m.rides; pickNewTaxiRide(); }
+      const target = taxiPhase === 'pickup' ? taxiPickup : taxiDropoff;
+      const pos = drivingCar.group.position;
+      const dist = Math.hypot(pos.x - target.x, pos.z - target.z);
+      const rideNum = m.rides - taxiRidesLeft + 1;
+      if (missionProgressEl) {
+        missionProgressEl.textContent = (taxiPhase === 'pickup' ? 'Client à ' : 'Dépose à ')
+          + Math.round(dist) + ' m — course ' + rideNum + '/' + m.rides;
+      }
+      if (dist < 4) {
+        if (taxiPhase === 'pickup') {
+          taxiPhase = 'dropoff';
+        } else {
+          sim.money += m.reward;
+          saveSim();
+          updateSimUI();
+          if (missionToast && missionToastRewardEl) {
+            missionToastRewardEl.textContent = '+' + m.reward + ' $';
+            missionToast.classList.remove('hidden');
+            setTimeout(() => missionToast.classList.add('hidden'), 1800);
+          }
+          taxiRidesLeft--;
+          if (taxiRidesLeft > 0) pickNewTaxiRide();
+          else completeMission(m);
+        }
+      }
       return;
     }
 
