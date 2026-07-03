@@ -53,6 +53,7 @@
       lastTickAt: Date.now(),
       buildings: [], // [{ id, type, lotId, x, z, builtAt }]
       nextBuildingId: 1,
+      foundCollectibles: [], // ids des objets cachés déjà trouvés
     };
   }
 
@@ -68,6 +69,7 @@
       if (numeric.some(k => !Number.isFinite(parsed[k]))) return defaultSimState();
       parsed.satisfaction = Math.min(100, Math.max(0, parsed.satisfaction));
       parsed.pollution = Math.min(100, Math.max(0, parsed.pollution));
+      if (!Array.isArray(parsed.foundCollectibles)) parsed.foundCollectibles = []; // champ additif, tolérant plutôt que de tout effacer
       return parsed;
     } catch (e) {
       return defaultSimState();
@@ -728,6 +730,119 @@
       const y = car.onBridgeAvenue ? bridgeY(car.pos) : 0;
       if (car.axis === 'x') car.group.position.set(car.pos, y, car.laneCoord);
       else car.group.position.set(car.laneCoord, y, car.pos);
+    });
+  }
+
+  /* ── Autoroute périphérique ──
+     Grande boucle qui contourne toute la ville (avenues, quartiers, tous
+     les repères) — vérifié à la main avant d'écrire les coordonnées : le
+     repère le plus excentré est la forêt (-38,-8, rayon 7.2, donc jusqu'à
+     x≈-45.2), et la boucle passe à x=-55/x=55, marge ~9.8 des deux côtés.
+     Le seul côté contraint est le nord (gare/pont/rivière, qui s'étend
+     jusqu'à z≈64 avec la route de raccordement) : la boucle y passe à
+     z=70 (marge ~6), mais reste à x=±55 — largement en dehors de la
+     rivière elle-même (large de 40, x∈[-20,20] environ) — donc elle la
+     contourne par la terre ferme au lieu d'avoir à la traverser.
+     Croise plusieurs avenues/trottoirs existants au passage (qui
+     s'étendent déjà jusqu'à x/z=±70) : de simples chevauchements de
+     bandes au sol, comme n'importe quel carrefour — aucun bâtiment/
+     magasin/parc dans toute la zone traversée. */
+  const HW_X1 = -55, HW_X2 = 55, HW_Z1 = -55, HW_Z2 = 70;
+  const HW_WIDTH = 4.4;
+  const highwayMat = new THREE.MeshStandardMaterial({ color: 0x11151f, roughness: 0.92, metalness: 0.05 });
+  const highwayEdgeMat = new THREE.MeshBasicMaterial({ color: 0xffe27a, transparent: true, opacity: 0.55 });
+
+  function addHighwaySegment(x1, z1, x2, z2) {
+    const horizontal = z1 === z2;
+    const length = horizontal ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+    const midX = (x1 + x2) / 2, midZ = (z1 + z2) / 2;
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(horizontal ? length : HW_WIDTH, horizontal ? HW_WIDTH : length),
+      highwayMat
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(midX, 0.03, midZ);
+    scene.add(road);
+    // Lignes de rive continues (pas pointillées, contrairement aux
+    // avenues) : c'est ce détail qui donne un look "autoroute" plutôt
+    // qu'une rue de plus.
+    [-(HW_WIDTH / 2 - 0.15), HW_WIDTH / 2 - 0.15].forEach(off => {
+      const edge = new THREE.Mesh(
+        new THREE.PlaneGeometry(horizontal ? length : 0.12, horizontal ? 0.12 : length),
+        highwayEdgeMat
+      );
+      edge.rotation.x = -Math.PI / 2;
+      edge.position.set(midX + (horizontal ? 0 : off), 0.05, midZ + (horizontal ? off : 0));
+      scene.add(edge);
+    });
+    addLaneMarking(horizontal ? midZ : midX, horizontal ? 'x' : 'z', length, horizontal ? midX : midZ);
+  }
+  const HW_CORNERS = [[HW_X1, HW_Z2], [HW_X2, HW_Z2], [HW_X2, HW_Z1], [HW_X1, HW_Z1]];
+  HW_CORNERS.forEach((c, i) => {
+    const n = HW_CORNERS[(i + 1) % HW_CORNERS.length];
+    addHighwaySegment(c[0], c[1], n[0], n[1]);
+  });
+
+  // Routes de sortie : partent du milieu de chaque côté de la boucle et
+  // filent se perdre dans le brouillard (visibilité ~130-150 unités avec
+  // la densité actuelle) — donnent l'impression qu'elles "vont ailleurs"
+  // sans avoir à modéliser quoi que ce soit au-delà.
+  function addExitRoad(x1, z1, x2, z2) {
+    const horizontal = z1 === z2;
+    const length = horizontal ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+    const midX = (x1 + x2) / 2, midZ = (z1 + z2) / 2;
+    addRoad(midX, midZ, horizontal ? length : 3.2, horizontal ? 3.2 : length);
+    addLaneMarking(horizontal ? midZ : midX, horizontal ? 'x' : 'z', length, horizontal ? midX : midZ);
+  }
+  addExitRoad(0, HW_Z1, 0, HW_Z1 - 60);
+  addExitRoad(0, HW_Z2, 0, HW_Z2 + 50);
+  addExitRoad(HW_X1, (HW_Z1 + HW_Z2) / 2, HW_X1 - 60, (HW_Z1 + HW_Z2) / 2);
+  addExitRoad(HW_X2, (HW_Z1 + HW_Z2) / 2, HW_X2 + 60, (HW_Z1 + HW_Z2) / 2);
+
+  // Trafic d'ambiance sur l'autoroute : boucle continue, sans arrêt aux
+  // feux (c'est un contournement, pas une rue de centre-ville) — même
+  // principe que les rames annulaires du métro (position par distance sur
+  // le périmètre), réutilisé ici pour des voitures partagées avec l'IA
+  // de circulation (mêmes géométrie/matériaux que carBodyGeo2 etc.).
+  const hwSegments = HW_CORNERS.map((a, i) => {
+    const b = HW_CORNERS[(i + 1) % HW_CORNERS.length];
+    return { a, b, len: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  });
+  const HW_PERIMETER = hwSegments.reduce((sum, s) => sum + s.len, 0);
+  function hwLoopPoint(dist) {
+    let s = ((dist % HW_PERIMETER) + HW_PERIMETER) % HW_PERIMETER;
+    for (const seg of hwSegments) {
+      if (s <= seg.len) {
+        const frac = s / seg.len;
+        return [seg.a[0] + (seg.b[0] - seg.a[0]) * frac, seg.a[1] + (seg.b[1] - seg.a[1]) * frac];
+      }
+      s -= seg.len;
+    }
+    return hwSegments[0].a;
+  }
+  const highwayCars = [];
+  const HW_CAR_COUNT = 5;
+  const HW_CAR_SPEED = 0.22;
+  for (let i = 0; i < HW_CAR_COUNT; i++) {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(carBodyGeo2, carBodyMat2);
+    body.position.y = 0.28;
+    group.add(body);
+    const glow = new THREE.Mesh(carGlowGeo2, carGlowMat2);
+    glow.position.set(0.78, 0.3, 0);
+    group.add(glow);
+    scene.add(group);
+    highwayCars.push({ group, dist: (HW_PERIMETER / HW_CAR_COUNT) * i });
+  }
+  function updateHighwayTraffic() {
+    highwayCars.forEach(car => {
+      car.dist += HW_CAR_SPEED;
+      const [x, z] = hwLoopPoint(car.dist);
+      const [nx, nz] = hwLoopPoint(car.dist + 0.5);
+      car.group.position.set(x, 0, z);
+      // atan2(dz, dx), même repère que les voitures/rames de la boucle
+      // métro (BoxGeometry avec le grand axe sur X local).
+      car.group.rotation.y = Math.atan2(nz - z, nx - x);
     });
   }
 
@@ -1974,6 +2089,15 @@
   const walkKeys = {};
   window.addEventListener('keydown', (e) => { walkKeys[e.key.toLowerCase()] = true; });
   window.addEventListener('keyup',   (e) => { walkKeys[e.key.toLowerCase()] = false; });
+  // Si la fenêtre perd le focus pendant qu'une touche est enfoncée (alt-tab,
+  // clic droit qui ouvre un menu, changement d'onglet...), le keyup
+  // correspondant n'arrive jamais et la touche reste "coincée" à true pour
+  // toujours — typiquement Q ou D restés actifs, ce qui fait tourner le
+  // personnage en continu même quand on ne touche plus rien alors qu'on
+  // croit juste avancer/reculer. On relâche tout dès que le focus part.
+  function releaseAllWalkKeys() { for (const k in walkKeys) walkKeys[k] = false; }
+  window.addEventListener('blur', releaseAllWalkKeys);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllWalkKeys(); });
   const WALK_SPEED = 0.19; // plus lent qu'avant (0.3) — allure de marche, pas de sprint permanent
 
   /* ── Bonhomme joueur (version détaillée) ──
@@ -2055,8 +2179,7 @@
   let playerActive = false; // devient vrai au clic sur "Explorer à pied" ou à la 1ère touche de marche
   let playerFacing = 0;
   let playerWalkPhase = 0;
-  let playerSpeedSmooth = 0; // vitesse lissée (inertie) — la caméra qui suit player.position en profite directement
-  let playerMoveDirX = 0, playerMoveDirZ = 0; // dernière direction de marche, réutilisée pendant la décélération
+  let playerSpeedSmooth = 0; // vitesse signée lissée (inertie) — la caméra qui suit player.position en profite directement
   let lookPitch = 0; // regard haut/bas en vue 1re personne (pas la même chose que orbit.phi)
   let chaseThetaSmooth = 0; // thêta lissé de la caméra de poursuite en voiture (dérivé de carFacing, pas de la souris)
   // Commence en 3e personne (visible) : en 1re personne par défaut, le
@@ -2102,6 +2225,7 @@
     playerActive = true;
     player.visible = thirdPerson; // caché en 1re personne, visible en 3e
     player.position.set(focusTarget.x, 0, focusTarget.z);
+    chaseThetaSmooth = playerFacing - Math.PI / 2; // évite un grand balayage de caméra à la 1re image (voir enterCar)
     refreshWalkUI();
   }
   function deactivatePlayer() {
@@ -2120,14 +2244,17 @@
   /* ── Collisions ──
      Le bonhomme ne traverse plus les bâtiments (boîtes 1.8×1.8 centrées
      sur group.position) ni les magasins (idem, un peu plus petits), et
-     reste dans les limites du monde (la rivière commence vers z≈49, d'où
-     le plafond à 46). Poussée hors de la boîte par l'axe le moins enfoncé :
-     on "glisse" le long des murs au lieu de rester bloqué net. */
+     reste dans les limites du monde. Plafond z relevé à 78 (avant 46,
+     pile avant la rivière) pour laisser atteindre l'autoroute périphérique
+     (boucle jusqu'à z=70) et traverser le pont à pied — voir bridgeY() du
+     côté voiture, réutilisé pareil pour la hauteur du bonhomme sur le pont.
+     Poussée hors de la boîte par l'axe le moins enfoncé : on "glisse" le
+     long des murs au lieu de rester bloqué net. */
   const PLAYER_CLEARANCE = 1.25;
   const SHOP_CLEARANCE = 1.15;
   function resolvePlayerCollisions(nx, nz) {
     nx = Math.max(-68, Math.min(68, nx));
-    nz = Math.max(-68, Math.min(46, nz));
+    nz = Math.max(-68, Math.min(78, nz));
     for (let i = 0; i < buildings.length; i++) {
       const b = buildings[i].position;
       const dx = nx - b.x, dz = nz - b.z;
@@ -2164,7 +2291,7 @@
 
   function resolveCarCollisions(nx, nz) {
     nx = Math.max(-68, Math.min(68, nx));
-    nz = Math.max(-68, Math.min(46, nz));
+    nz = Math.max(-68, Math.min(78, nz));
     for (let i = 0; i < buildings.length; i++) {
       const b = buildings[i].position;
       const dx = nx - b.x, dz = nz - b.z;
@@ -2290,6 +2417,12 @@
     const solved = resolveCarCollisions(drivingCar.group.position.x + dx, drivingCar.group.position.z + dz);
     drivingCar.group.position.x = solved.x;
     drivingCar.group.position.z = solved.z;
+    // Même règle que les voitures IA : seule l'avenue centrale passe par
+    // le pont, donc seule une position proche de x=0 suit le profil élevé
+    // du tablier — sinon la voiture du joueur roulait à plat "dans" la
+    // rivière au lieu de monter sur le pont (possible depuis que le
+    // plafond z a été relevé pour l'autoroute périphérique).
+    drivingCar.group.position.y = Math.abs(solved.x) < 1.6 ? bridgeY(solved.z) : 0;
     drivingCar.group.rotation.y = carFacing;
   }
 
@@ -2339,6 +2472,7 @@
   const missionDescEl       = document.getElementById('mission-desc');
   const missionProgressEl   = document.getElementById('mission-progress');
   const missionToast        = document.getElementById('mission-toast');
+  const missionToastTitleEl = document.getElementById('mission-toast-title');
   const missionToastRewardEl = document.getElementById('mission-toast-reward');
 
   function currentMission() { return MISSIONS[missionIndex % MISSIONS.length]; }
@@ -2348,15 +2482,21 @@
     missionDescEl.textContent = currentMission().label;
   }
 
+  let missionToastTimer = null;
+  function showMissionToast(title, rewardText, durationMs) {
+    if (!missionToast) return;
+    if (missionToastTitleEl) missionToastTitleEl.textContent = title;
+    if (missionToastRewardEl) missionToastRewardEl.textContent = rewardText;
+    missionToast.classList.remove('hidden');
+    if (missionToastTimer) clearTimeout(missionToastTimer);
+    missionToastTimer = setTimeout(() => missionToast.classList.add('hidden'), durationMs || 2000);
+  }
+
   function completeMission(m) {
     sim.money += m.reward;
     saveSim();
     updateSimUI();
-    if (missionToast && missionToastRewardEl) {
-      missionToastRewardEl.textContent = '+' + m.reward + ' $';
-      missionToast.classList.remove('hidden');
-      setTimeout(() => missionToast.classList.add('hidden'), 2200);
-    }
+    showMissionToast('MISSION ACCOMPLIE', '+' + m.reward + ' $', 2200);
     missionIndex++;
     missionStartBuildingCount = sim.buildings.length;
     taxiRidesLeft = 0; // repart de zéro si le mode taxi revient plus tard dans la boucle
@@ -2395,11 +2535,7 @@
           sim.money += m.reward;
           saveSim();
           updateSimUI();
-          if (missionToast && missionToastRewardEl) {
-            missionToastRewardEl.textContent = '+' + m.reward + ' $';
-            missionToast.classList.remove('hidden');
-            setTimeout(() => missionToast.classList.add('hidden'), 1800);
-          }
+          showMissionToast('COURSE TERMINÉE', '+' + m.reward + ' $', 1800);
           taxiRidesLeft--;
           if (taxiRidesLeft > 0) pickNewTaxiRide();
           else completeMission(m);
@@ -2423,6 +2559,56 @@
     if (dist < 4) completeMission(m);
   }
   updateMissionUI();
+
+  /* ── Objets cachés ──
+     De petits objets lumineux dispersés dans des coins de la ville qu'on
+     ne visite pas forcément en suivant juste les missions (parking
+     souterrain, forêt, pont...) — récompense l'exploration. Pas de
+     mission dédiée pour l'instant (juste un compteur de progression,
+     sauvegardé), les missions qui s'en servent viendront après. */
+  const COLLECTIBLE_SPOTS = [
+    { id: 0, x: -8,  y: -2.5, z: -26, label: 'Parking souterrain' },
+    { id: 1, x: -28, y: 1.5,  z: 40,  label: 'Derrière Gare Ouest' },
+    { id: 2, x: -38, y: 1.5,  z: -8,  label: 'Forêt urbaine' },
+    { id: 3, x: 0,   y: 1.8,  z: -49, label: 'Bout de la ligne annulaire sud' },
+    { id: 4, x: 38,  y: 1.5,  z: -8,  label: 'Près du stade' },
+    { id: 5, x: 0,   y: 1.5,  z: 54,  label: 'Sur le pont' },
+    { id: 6, x: -38, y: 1.5,  z: -35, label: 'Chantier municipal' },
+    { id: 7, x: 3,   y: 1.5,  z: 3,   label: 'Centre-ville' },
+  ];
+  const collectibleGeo = new THREE.OctahedronGeometry(0.28, 0);
+  const collectibleMat = new THREE.MeshStandardMaterial({
+    color: 0xffe27a, emissive: 0xffe27a, emissiveIntensity: 1.2, transparent: true, opacity: 0.9
+  });
+  const collectibleMeshes = [];
+  (function spawnCollectibles() {
+    COLLECTIBLE_SPOTS.forEach(spot => {
+      if (sim.foundCollectibles.includes(spot.id)) return; // déjà trouvé lors d'une session précédente
+      const mesh = new THREE.Mesh(collectibleGeo, collectibleMat);
+      mesh.position.set(spot.x, spot.y, spot.z);
+      scene.add(mesh);
+      collectibleMeshes.push({ mesh, spot });
+    });
+  })();
+
+  function updateCollectibles() {
+    if (!playerActive || collectibleMeshes.length === 0) return;
+    const pos = drivingCar ? drivingCar.group.position : player.position;
+    for (let i = collectibleMeshes.length - 1; i >= 0; i--) {
+      const c = collectibleMeshes[i];
+      c.mesh.rotation.y += 0.03;
+      c.mesh.rotation.x += 0.015;
+      c.mesh.position.y = c.spot.y + Math.sin(t * 2 + c.spot.id) * 0.15;
+      const dist = Math.hypot(pos.x - c.spot.x, pos.z - c.spot.z);
+      if (dist < 2.5) {
+        scene.remove(c.mesh);
+        collectibleMeshes.splice(i, 1);
+        sim.foundCollectibles.push(c.spot.id);
+        saveSim();
+        showMissionToast('OBJET TROUVÉ', c.spot.label + ' — ' + sim.foundCollectibles.length + '/' + COLLECTIBLE_SPOTS.length, 2000);
+      }
+    }
+  }
 
   /* ── Joystick virtuel (mobile) ──
      Renvoie un vecteur analogique (-1..1) fusionné avec le clavier dans
@@ -2471,7 +2657,7 @@
     }
     if (focused) return;
 
-    if (playerActive) checkMissionProgress();
+    if (playerActive) { checkMissionProgress(); updateCollectibles(); }
     updateCarPromptUI();
 
     if (drivingCar) {
@@ -2479,80 +2665,68 @@
       return; // le clavier pilote la voiture, pas le bonhomme, tant qu'on conduit
     }
 
-    // Tourne en continu tant que le curseur n'est pas centré (voir le
-    // mousemove ci-dessous) — c'est ÇA qui fait "tourner la caméra", et
-    // comme fx/fz (plus bas) recalculent la direction de marche à partir
-    // de ce même orbit.theta à chaque frame, le déplacement suit toujours
-    // exactement là où on regarde désormais. Inactif en voiture (return
-    // ci-dessus) : la caméra y est verrouillée derrière le véhicule, pas
-    // pilotée par la souris.
-    if (playerLookX !== 0) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
+    // La souris ne pilote plus le personnage en 3e personne (caméra
+    // verrouillée derrière lui, voir plus bas comme en voiture) — elle ne
+    // sert plus qu'au regard libre en vue 1re personne.
+    if (playerLookX !== 0 && !thirdPerson) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
 
-    let fInput = 0, rInput = 0;
+    let fInput = 0, turnInput = 0;
     if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
     if (walkKeys['s'] || walkKeys['arrowdown'])                  fInput -= 1;
-    if (walkKeys['d'] || walkKeys['arrowright'])                 rInput += 1;
-    if (walkKeys['a'] || walkKeys['q'] || walkKeys['arrowleft']) rInput -= 1;
+    if (walkKeys['d'] || walkKeys['arrowright'])                 turnInput += 1;
+    if (walkKeys['a'] || walkKeys['q'] || walkKeys['arrowleft']) turnInput -= 1;
     fInput += joyInput.f;
-    rInput += joyInput.r;
-    const moving  = Math.hypot(fInput, rInput) > 0.08;
+    turnInput += joyInput.r;
+    const moving  = Math.abs(fInput) > 0.08;
     const running = !!walkKeys['shift'];
 
-    // Vitesse avec inertie (accélère vite, freine progressivement) au lieu
-    // de partir/s'arrêter net à chaque frappe — la caméra qui suit
-    // player.position hérite directement de ce lissage, donc plus besoin
-    // de la lisser séparément.
-    const targetSpeed = moving ? WALK_SPEED * (running ? 1.9 : 1) : 0;
+    if (moving && !playerActive) activatePlayer();
+
+    // Tourne comme la voiture : A/D (ou le joystick) pivote directement le
+    // personnage lui-même au lieu de faire glisser la caméra — inversé en
+    // marche arrière, même formule que updateCarControls().
+    if (fInput !== 0) playerFacing -= turnInput * PLAYER_TURN_RATE * Math.sign(fInput);
+
+    // Vitesse signée avec inertie (accélère vite, freine progressivement) —
+    // positive en avançant, négative en reculant.
+    const maxSpeed = WALK_SPEED * (running ? 1.9 : 1);
+    const targetSpeed = moving ? maxSpeed * Math.sign(fInput) : 0;
     playerSpeedSmooth += (targetSpeed - playerSpeedSmooth) * (moving ? 0.18 : 0.07);
 
-    if (moving) {
-      if (!playerActive) activatePlayer();
-      const fx = -Math.sin(orbit.theta), fz = -Math.cos(orbit.theta);
-      const rx = -fz, rz = fx;
-      const len = Math.max(1, Math.hypot(fInput, rInput)); // analogique : jamais amplifié, jamais > 1
-      playerMoveDirX = (fx * fInput + rx * rInput) / len; // dernière direction visée, réutilisée pendant la décélération
-      playerMoveDirZ = (fz * fInput + rz * rInput) / len;
-    }
-
-    if (playerActive) {
-      // Le bonhomme s'oriente toujours dans le sens où regarde la caméra,
-      // même à l'arrêt — tourner la caméra tourne aussi le personnage,
-      // pas seulement en marchant. orbit.theta+π car la caméra est
-      // positionnée à l'opposé de "l'avant" (voir fx/fz ci-dessus).
-      const targetFacing = orbit.theta + Math.PI;
-      let dFace = targetFacing - playerFacing;
-      if (dFace >  Math.PI) dFace -= Math.PI * 2;
-      if (dFace < -Math.PI) dFace += Math.PI * 2;
-      playerFacing += dFace * 0.22;
-    }
-
-    if (playerSpeedSmooth > 0.002) {
-      const solved = resolvePlayerCollisions(
-        focusTarget.x + playerMoveDirX * playerSpeedSmooth,
-        focusTarget.z + playerMoveDirZ * playerSpeedSmooth
-      );
+    if (Math.abs(playerSpeedSmooth) > 0.002) {
+      // Avant local = -Z (même convention que les piétons de fond) : pour
+      // rotation.y=playerFacing, l'avant pointe en monde vers (-sin,-cos).
+      const dx = -Math.sin(playerFacing) * playerSpeedSmooth;
+      const dz = -Math.cos(playerFacing) * playerSpeedSmooth;
+      const solved = resolvePlayerCollisions(focusTarget.x + dx, focusTarget.z + dz);
       focusTarget.x = solved.x;
       focusTarget.z = solved.z;
 
-      const walkFrac = Math.min(1, playerSpeedSmooth / (WALK_SPEED * (running ? 1.9 : 1)));
-      playerWalkPhase += (running ? 0.36 : 0.25) * walkFrac;
+      const walkFrac = Math.min(1, Math.abs(playerSpeedSmooth) / maxSpeed);
+      const dirSign = playerSpeedSmooth >= 0 ? 1 : -1;
+      playerWalkPhase += (running ? 0.36 : 0.25) * walkFrac * dirSign;
       const amp = (running ? 0.8 : 0.6) * walkFrac;
       const swing = Math.sin(playerWalkPhase) * amp;
       playerLegL.rotation.x =  swing; playerLegR.rotation.x = -swing;
       playerArmL.rotation.x = -swing * 0.85; playerArmR.rotation.x =  swing * 0.85;
-      // Rebond du corps + inclinaison vers l'avant (plus marquée en courant)
-      player.position.y = Math.abs(Math.sin(playerWalkPhase)) * (running ? 0.045 : 0.028) * walkFrac;
-      playerTorso.rotation.x += ((running ? 0.16 : 0.08) * walkFrac - playerTorso.rotation.x) * 0.15;
+      // Rebond du corps + inclinaison vers l'avant (plus marquée en courant),
+      // par-dessus la hauteur du tablier du pont (0 partout ailleurs) —
+      // même principe que la voiture du joueur, pour ne pas marcher "dans"
+      // la rivière en traversant à pied.
+      const bridgeBaseY = Math.abs(focusTarget.x) < 1.6 ? bridgeY(focusTarget.z) : 0;
+      player.position.y = bridgeBaseY + Math.abs(Math.sin(playerWalkPhase)) * (running ? 0.045 : 0.028) * walkFrac;
+      playerTorso.rotation.x += ((running ? 0.16 : 0.08) * walkFrac * dirSign - playerTorso.rotation.x) * 0.15;
       playerHead.rotation.x = playerTorso.rotation.x * 0.5;
     } else if (playerActive) {
       // Retour au repos (membres, inclinaison, rebond) + légère respiration
+      const bridgeBaseY = Math.abs(focusTarget.x) < 1.6 ? bridgeY(focusTarget.z) : 0;
       playerLegL.rotation.x += (0 - playerLegL.rotation.x) * 0.2;
       playerLegR.rotation.x += (0 - playerLegR.rotation.x) * 0.2;
       playerArmL.rotation.x += (0 - playerArmL.rotation.x) * 0.2;
       playerArmR.rotation.x += (0 - playerArmR.rotation.x) * 0.2;
       playerTorso.rotation.x += (0 - playerTorso.rotation.x) * 0.15;
       playerHead.rotation.x  += (0 - playerHead.rotation.x)  * 0.15;
-      player.position.y += (0 - player.position.y) * 0.2;
+      player.position.y += (bridgeBaseY - player.position.y) * 0.2;
       playerTorso.position.y = 0.34 + Math.sin(t * 2.2) * 0.004;
     }
 
@@ -2878,37 +3052,40 @@
     // Orbite sphérique lissée (LERP faible = mouvement plus long/fluide)
     const LERP = 0.02;
     const FOCUS_LERP = 0.035;
-    const carChaseMode = playerActive && thirdPerson && drivingCar;
+    // Caméra de poursuite verrouillée : active en voiture ET à pied en 3e
+    // personne désormais, pour la même raison dans les deux cas — sinon
+    // "tourner à droite" peut sembler aller à gauche à l'écran selon
+    // l'angle où se trouvait la caméra à ce moment précis (orbite libre à
+    // la souris). Le thêta suit le cap du perso/véhicule, pas la souris.
+    const chaseMode = playerActive && thirdPerson;
     // Lerp angulaire (gestion du wrap 0/2π pour éviter le saut) — toujours
-    // actif, sauf en caméra de poursuite voiture (thêta y est piloté par
-    // le cap du véhicule, pas par la souris — voir plus bas).
-    if (!carChaseMode) {
+    // actif, sauf en caméra de poursuite (thêta y est piloté par le cap du
+    // perso/véhicule, pas par la souris — voir plus bas).
+    if (!chaseMode) {
       let dt = orbit.theta - orbitSmooth.theta;
       if (dt >  Math.PI) dt -= Math.PI * 2;
       if (dt < -Math.PI) dt += Math.PI * 2;
       orbitSmooth.theta += dt * (focused || playerActive ? FOCUS_LERP : LERP);
     }
 
-    if (carChaseMode) {
-      // Caméra verrouillée derrière la voiture (comme un jeu de course),
-      // PAS en orbite libre à la souris : sinon "tourner à droite" peut
-      // sembler aller à gauche à l'écran selon l'angle où se trouvait la
-      // caméra à ce moment précis. chaseTheta = carFacing - π/2 place la
-      // caméra derrière le véhicule avec la même formule sphérique que
-      // les autres vues (un thêta dérivé du cap, pas de la souris).
-      const chaseTheta = carFacing - Math.PI / 2;
+    if (chaseMode) {
+      // chaseTheta = cap - π/2 place la caméra derrière le perso/véhicule
+      // avec la même formule sphérique que les autres vues.
+      const facingNow  = drivingCar ? carFacing : playerFacing;
+      const chaseTheta = facingNow - Math.PI / 2;
       let dtc = chaseTheta - chaseThetaSmooth;
       if (dtc >  Math.PI) dtc -= Math.PI * 2;
       if (dtc < -Math.PI) dtc += Math.PI * 2;
       chaseThetaSmooth += dtc * 0.12;
-      const chasePhi = 1.15;
-      orbitSmooth.phi    += (chasePhi - orbitSmooth.phi) * FOCUS_LERP;
-      orbitSmooth.radius += (11 - orbitSmooth.radius) * FOCUS_LERP;
-      const carPos = drivingCar.group.position;
-      camera.position.x = carPos.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(chaseThetaSmooth);
+      const chasePhi    = drivingCar ? 1.15 : Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi));
+      const chaseRadius = drivingCar ? 11 : PLAYER_RADIUS;
+      orbitSmooth.phi    += (chasePhi    - orbitSmooth.phi)    * FOCUS_LERP;
+      orbitSmooth.radius += (chaseRadius - orbitSmooth.radius) * FOCUS_LERP;
+      const targetPos = drivingCar ? drivingCar.group.position : player.position;
+      camera.position.x = targetPos.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(chaseThetaSmooth);
       camera.position.y = 0.9 + orbitSmooth.radius * Math.cos(orbitSmooth.phi);
-      camera.position.z = carPos.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(chaseThetaSmooth);
-      camera.lookAt(carPos.x, 0.9, carPos.z);
+      camera.position.z = targetPos.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(chaseThetaSmooth);
+      camera.lookAt(targetPos.x, 0.9, targetPos.z);
     } else if (playerActive && !thirdPerson) {
       // Vue 1re personne : la caméra est aux yeux du bonhomme (ou du
       // conducteur, un peu plus haut, si on est en voiture), pas en
@@ -2922,19 +3099,6 @@
         camera.position.y + Math.sin(lookPitch),
         camera.position.z - Math.cos(orbitSmooth.theta) * Math.cos(lookPitch)
       );
-    } else if (playerActive && thirdPerson) {
-      // Vue 3e personne : orbite classique (souris → thêta/phi) mais
-      // centrée sur le bonhomme (ou la voiture qu'il conduit) au lieu de
-      // l'origine/un bâtiment.
-      const targetPos = drivingCar ? drivingCar.group.position : player.position;
-      const followRadius = drivingCar ? 11 : PLAYER_RADIUS;
-      const targetPhi = Math.min(PHI_MAX, Math.max(PHI_MIN, orbit.phi));
-      orbitSmooth.phi    += (targetPhi     - orbitSmooth.phi)    * FOCUS_LERP;
-      orbitSmooth.radius += (followRadius  - orbitSmooth.radius) * FOCUS_LERP;
-      camera.position.x = targetPos.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(orbitSmooth.theta);
-      camera.position.y = 0.9 + orbitSmooth.radius * Math.cos(orbitSmooth.phi);
-      camera.position.z = targetPos.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(orbitSmooth.theta);
-      camera.lookAt(targetPos.x, 0.9, targetPos.z);
     } else {
       // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
       const scrollRadiusTarget = focused ? orbit.radius : DEFAULT_RADIUS + scrollZoom * 55 + zoomOffset;
@@ -2980,6 +3144,7 @@
     const trafficPhase = getTrafficPhase(t);
     updateTrafficLights(trafficPhase);
     updateMovingCars(trafficPhase);
+    updateHighwayTraffic();
 
     // Piétons, cyclistes, oiseaux des parcs
     updateMovingPedestrians();

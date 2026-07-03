@@ -18,6 +18,8 @@ personnage jouable, de jour comme de nuit.
   1ʳᵉ / 3ᵉ personne, joystick virtuel sur mobile.
 - **Ville vivante** : voitures et feux de circulation, piétons, cyclistes, rames de
   métro (ligne annulaire incluse), oiseaux, nuages animés.
+- **Autoroute périphérique** : grande boucle tout autour de la ville avec son propre
+  trafic, plus des routes de sortie qui filent se perdre dans le brouillard.
 - **Cycle jour / nuit** avec transition douce (brouillard, lumières, montagnes).
 - **Simulation de gestion** : argent, population, énergie/eau, pollution,
   satisfaction — construction de bâtiments, état persisté en `localStorage`.
@@ -33,7 +35,7 @@ personnage jouable, de jour comme de nuit.
 | Tourner la caméra | Souris (ou glisser en Vue ville) |
 | Zoomer | Molette / pincement |
 | Activer le mode piéton | Bouton **⇧ Explorer à pied** (Vue ville) ou une touche de marche |
-| Marcher | `Z Q S D` / `W A S D` / flèches — joystick sur mobile |
+| Avancer / reculer / tourner | `Z S` + `Q D` / `W S` + `A D` / flèches — joystick sur mobile |
 | Courir | `Shift` |
 | Vue 1ʳᵉ / 3ᵉ personne | `V` ou le bouton dédié |
 | Sélectionner un bâtiment | Clic / tap |
