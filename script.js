@@ -2187,7 +2187,6 @@
   // donnait l'impression que rien ne se passait. On le voit d'abord
   // apparaître, et on peut passer en 1re personne ensuite (bouton/touche V).
   let thirdPerson = true;
-  let playerLookX = 0; // -0.5..0.5, position souris par rapport au centre — tourne en continu
   const PLAYER_TURN_RATE = 0.05;
   const PLAYER_RADIUS = 5.5; // distance de la caméra en vue 3e personne (rapprochée, était 9)
   const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -2225,7 +2224,7 @@
     playerActive = true;
     player.visible = thirdPerson; // caché en 1re personne, visible en 3e
     player.position.set(focusTarget.x, 0, focusTarget.z);
-    chaseThetaSmooth = playerFacing - Math.PI / 2; // évite un grand balayage de caméra à la 1re image (voir enterCar)
+    chaseThetaSmooth = playerFacing; // évite un grand balayage de caméra à la 1re image (voir enterCar) — pas de décalage -π/2 ici, voir chaseMode
     refreshWalkUI();
   }
   function deactivatePlayer() {
@@ -2233,7 +2232,6 @@
     playerActive = false;
     player.visible = false;
     lookPitch = 0;
-    playerLookX = 0;
     playerSpeedSmooth = 0;
     focusTarget.y = 2; // hauteur de vue normale, ré-adoptée en quittant le mode piéton
     refreshWalkUI();
@@ -2336,7 +2334,12 @@
     focusTarget.z = carPos.z + Math.cos(carFacing + Math.PI / 2) * 1.8;
     player.position.set(focusTarget.x, 0, focusTarget.z);
     player.visible = thirdPerson;
-    playerFacing = carFacing;
+    // carFacing et playerFacing utilisent des conventions d'axe différentes
+    // (avant voiture = X local, avant bonhomme = -Z local) : une simple
+    // recopie de l'angle le ferait apparaître tourné de 90° par rapport à
+    // la voiture. -π/2 convertit vers l'angle bonhomme qui pointe dans la
+    // même direction monde que carFacing (même dérivation que chaseMode).
+    playerFacing = carFacing - Math.PI / 2;
     drivingCar.pos = drivingCar.axis === 'x' ? drivingCar.group.position.x : drivingCar.group.position.z;
     drivingCar.speed = 0;
     drivingCar = null;
@@ -2665,11 +2668,10 @@
       return; // le clavier pilote la voiture, pas le bonhomme, tant qu'on conduit
     }
 
-    // La souris ne pilote plus le personnage en 3e personne (caméra
-    // verrouillée derrière lui, voir plus bas comme en voiture) — elle ne
-    // sert plus qu'au regard libre en vue 1re personne.
-    if (playerLookX !== 0 && !thirdPerson) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
-
+    // La souris ne pilote plus le cap du personnage, ni en 3e personne
+    // (caméra verrouillée derrière lui) ni en 1re (le regard suit
+    // désormais playerFacing/carFacing, voir la caméra plus bas) — Q/D
+    // tournent le corps ET la vue ensemble, comme en voiture.
     let fInput = 0, turnInput = 0;
     if (walkKeys['w'] || walkKeys['z'] || walkKeys['arrowup'])    fInput += 1;
     if (walkKeys['s'] || walkKeys['arrowdown'])                  fInput -= 1;
@@ -2753,18 +2755,11 @@
       }
       return;
     }
-    // En mode piéton (sans glisser) : tourner progressivement selon la
-    // position du curseur PAR RAPPORT AU CENTRE de l'écran (pas sa
-    // position absolue comme en navigation normale) — plus le curseur
-    // s'écarte du centre, plus ça tourne vite ; centré = ne tourne pas.
-    // L'ancienne version recopiait la position absolue de la souris sur
-    // orbit.theta à chaque frame, ce qui réorientait le bonhomme au hasard
-    // dès qu'on bougeait la souris, même sans intention de tourner.
-    if (playerActive) {
-      const nx = e.clientX / window.innerWidth - 0.5; // -0.5 (bord gauche) .. 0.5 (bord droit)
-      playerLookX = Math.abs(nx) < 0.06 ? 0 : nx;
-      return;
-    }
+    // En mode piéton/conduite (sans glisser) : la souris ne pilote plus le
+    // cap (Q/D s'en chargent, corps + caméra ensemble) — on bloque juste le
+    // survol "navigation normale" ci-dessous pour ne pas réorienter la
+    // caméra au hasard au moindre mouvement de souris.
+    if (playerActive) return;
     if (focused) return;
     const nx = e.clientX / window.innerWidth;
     const ny = e.clientY / window.innerHeight;
@@ -3069,10 +3064,16 @@
     }
 
     if (chaseMode) {
-      // chaseTheta = cap - π/2 place la caméra derrière le perso/véhicule
-      // avec la même formule sphérique que les autres vues.
-      const facingNow  = drivingCar ? carFacing : playerFacing;
-      const chaseTheta = facingNow - Math.PI / 2;
+      // La voiture a son avant sur l'axe X local (rotation.y=θ → avant
+      // monde (cosθ,-sinθ)) : il faut reculer chaseTheta de π/2 pour que
+      // la formule sphérique (sinθ,cosθ) tombe derrière elle. Le bonhomme
+      // a son avant sur -Z local (avant monde (-sinθ,-cosθ)), qui EST déjà
+      // la forme (sinθ,cosθ) inversée — donc chaseTheta = playerFacing
+      // directement, sans décalage. Utiliser le même -π/2 pour les deux
+      // (comme avant) plaçait la caméra à 90° du vrai "derrière" du
+      // bonhomme, ce qui le faisait paraître tourné de travers et rendait
+      // les commandes incohérentes à l'écran.
+      const chaseTheta = drivingCar ? (carFacing - Math.PI / 2) : playerFacing;
       let dtc = chaseTheta - chaseThetaSmooth;
       if (dtc >  Math.PI) dtc -= Math.PI * 2;
       if (dtc < -Math.PI) dtc += Math.PI * 2;
@@ -3090,14 +3091,24 @@
       // Vue 1re personne : la caméra est aux yeux du bonhomme (ou du
       // conducteur, un peu plus haut, si on est en voiture), pas en
       // orbite autour d'un point — plus de rayon/hauteur d'orbite ici,
-      // juste une position + un regard (lacet=orbit.theta, tangage=lookPitch).
+      // juste une position + un regard. Le lacet suit playerFacing/
+      // carFacing (Q/D), pas la souris : avant, le regard restait piloté
+      // par orbit.theta pendant que Q/D tournait le corps séparément —
+      // "avancer" pouvait alors sembler partir de travers si la souris
+      // n'était pas alignée avec le cap réel. Seul le tangage
+      // (lookPitch, haut/bas) reste au glisser de souris.
       const targetPos = drivingCar ? drivingCar.group.position : player.position;
       const EYE_HEIGHT = drivingCar ? 1.0 : 0.75;
       camera.position.set(targetPos.x, EYE_HEIGHT, targetPos.z);
+      // La voiture a son avant sur l'axe X local (cos,-sin) ; le bonhomme
+      // sur -Z local (-sin,-cos) — mêmes formules que updateCarControls()
+      // et le déplacement du bonhomme plus haut.
+      const lookDX = drivingCar ? Math.cos(carFacing) : -Math.sin(playerFacing);
+      const lookDZ = drivingCar ? -Math.sin(carFacing) : -Math.cos(playerFacing);
       camera.lookAt(
-        camera.position.x - Math.sin(orbitSmooth.theta) * Math.cos(lookPitch),
+        camera.position.x + lookDX * Math.cos(lookPitch),
         camera.position.y + Math.sin(lookPitch),
-        camera.position.z - Math.cos(orbitSmooth.theta) * Math.cos(lookPitch)
+        camera.position.z + lookDZ * Math.cos(lookPitch)
       );
     } else {
       // Cible du rayon : s'éloigne + prend de la hauteur quand on scroll (sauf en mode focus)
