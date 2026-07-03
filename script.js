@@ -449,12 +449,17 @@
       addRoad(pos, -10.5, 1.4, 119); // z: -70 → 49 (s'arrête à la rive sud)
     }
   });
-  // Rues secondaires plus fines, une par rangée de bâtiments (STEP = 4.6)
+  // Rues secondaires, une par rangée de bâtiments (STEP = 4.6). Élargies
+  // à 1.0 (avant 0.55) pour que la ville se sente plus grande — sans
+  // toucher aux GRANDES avenues, dont la largeur exacte est reprise par
+  // beaucoup d'autres systèmes (voies de voitures, trottoirs, feux,
+  // magasins...) déjà calés dessus ; ces petites rues ne portent ni
+  // voiture ni piéton/cycliste, donc aucun risque à les élargir.
   for (let k = -4; k <= 4; k++) {
     const p = k * 4.6;
     if ([0, 16, -16, 32, -32, 44, -44].some(v => Math.abs(v - p) < 0.5)) continue;
-    addRoad(0, p, 140, 0.55);
-    addRoad(p, 0, 0.55, 140);
+    addRoad(0, p, 140, 1.0);
+    addRoad(p, 0, 1.0, 140);
   }
   // Trottoirs le long des grandes avenues. Ceux qui longent les avenues
   // NON centrales (nord-sud) sont raccourcis comme la route elle-même
@@ -704,12 +709,17 @@
       const axisMoving = phase[0] === axisLetter; // vert ou orange pour cet axe
       let targetSpeed = car.baseSpeed;
       if (!axisMoving) {
+        // Freinage progressif : ralentit dès 8 unités avant le feu (pas
+        // juste "pleine vitesse puis stop net à 3 unités") — plus la
+        // voiture est proche de la ligne d'arrêt, plus elle roule lentement.
         const dir = Math.sign(car.baseSpeed);
-        const nearRedStop = car.stopCoords.some(c => {
+        const BRAKE_ZONE = 8;
+        let brakeFactor = 1;
+        car.stopCoords.forEach(c => {
           const d = (c - car.pos) * dir; // distance devant la voiture, dans son sens de marche
-          return d > 0 && d < 3;
+          if (d > 0 && d < BRAKE_ZONE) brakeFactor = Math.min(brakeFactor, d / BRAKE_ZONE);
         });
-        if (nearRedStop) targetSpeed = 0;
+        targetSpeed = car.baseSpeed * brakeFactor;
       }
       car.speed += (targetSpeed - car.speed) * 0.06;
       car.pos += car.speed;
@@ -1933,7 +1943,7 @@
   const walkKeys = {};
   window.addEventListener('keydown', (e) => { walkKeys[e.key.toLowerCase()] = true; });
   window.addEventListener('keyup',   (e) => { walkKeys[e.key.toLowerCase()] = false; });
-  const WALK_SPEED = 0.3;
+  const WALK_SPEED = 0.19; // plus lent qu'avant (0.3) — allure de marche, pas de sprint permanent
 
   /* ── Bonhomme joueur (version détaillée) ──
      Silhouette cyberpunk distincte des piétons de fond : combinaison
@@ -2007,7 +2017,7 @@
   playerRing.position.y = 0.02;
   player.add(playerRing);
 
-  player.scale.setScalar(1.4); // un peu plus grand que les piétons de fond, pour bien le repérer
+  player.scale.setScalar(1.0); // même taille que les piétons de fond (1.4 le faisait paraître trop grand)
   player.visible = false;
   scene.add(player);
 
@@ -2017,6 +2027,7 @@
   let playerSpeedSmooth = 0; // vitesse lissée (inertie) — la caméra qui suit player.position en profite directement
   let playerMoveDirX = 0, playerMoveDirZ = 0; // dernière direction de marche, réutilisée pendant la décélération
   let lookPitch = 0; // regard haut/bas en vue 1re personne (pas la même chose que orbit.phi)
+  let chaseThetaSmooth = 0; // thêta lissé de la caméra de poursuite en voiture (dérivé de carFacing, pas de la souris)
   // Commence en 3e personne (visible) : en 1re personne par défaut, le
   // bonhomme n'apparaît jamais à l'écran (la caméra est "dedans"), ce qui
   // donnait l'impression que rien ne se passait. On le voit d'abord
@@ -2051,6 +2062,7 @@
     if (walkControlsPanel) walkControlsPanel.classList.toggle('hidden', !inCity || !playerActive || IS_TOUCH);
     if (walkJoystick)      walkJoystick.classList.toggle('hidden', !inCity || !playerActive || !IS_TOUCH);
     if (viewModeToggle)    viewModeToggle.classList.toggle('hidden', !inCity || !playerActive);
+    if (missionPanel)      missionPanel.classList.toggle('hidden', !inCity || !playerActive);
   }
   window.refreshWalkUI = refreshWalkUI; // aussi appelé par le bouton "Vue ville"
 
@@ -2114,7 +2126,7 @@
      proprement de cet endroit plutôt que de sauter ailleurs. */
   let drivingCar = null;
   let carFacing = 0;
-  const CAR_SPEED = 0.85;
+  const CAR_SPEED = 0.45; // plus lente qu'avant (0.85) — trop rapide pour tourner sans sortir de la route
   const CAR_TURN_SPEED = 0.045;
   const CAR_CLEARANCE = 1.5;
   const carPrompt = document.getElementById('car-prompt');
@@ -2155,6 +2167,7 @@
   function enterCar(car) {
     drivingCar = car;
     carFacing = car.group.rotation.y;
+    chaseThetaSmooth = carFacing - Math.PI / 2; // évite un grand balayage de caméra à la 1re image
     player.visible = false;
     if (carPrompt) carPrompt.classList.add('hidden');
   }
@@ -2212,6 +2225,77 @@
     drivingCar.group.rotation.y = carFacing;
   }
 
+  /* ── Missions ──
+     Petite file d'objectifs (marcher/conduire jusqu'à un lieu connu,
+     construire un bâtiment) pour donner un vrai but au mode piéton/
+     conduite au lieu de juste se balader — récompense en argent, versée
+     directement dans sim.money (le même argent que le panneau Ville_Statut
+     et la construction). Réutilise des lieux déjà existants dans la
+     scène, donc aucune nouvelle coordonnée à vérifier. */
+  const MISSIONS = [
+    { type: 'walk',  x: -38,   z: 8,   label: "Va à pied jusqu'à l'école (CAMPUS_CODE)",             reward: 250 },
+    { type: 'drive', x: 7.3,   z: 38,  label: 'Conduis une voiture jusqu\'à GARE_EST',                reward: 400 },
+    { type: 'walk',  x: 38,    z: -8,  label: "Va à pied jusqu'au stade (ESPORT_ARENA)",              reward: 300 },
+    { type: 'drive', x: -23.3, z: 38,  label: 'Conduis une voiture jusqu\'à GARE_OUEST',              reward: 400 },
+    { type: 'walk',  x: -8,    z: -38, label: "Va à pied jusqu'au parc sud",                          reward: 250 },
+    { type: 'build', x: -38,   z: -38, label: 'Construis un bâtiment dans le chantier municipal',     reward: 600 },
+  ];
+  let missionIndex = 0;
+  let missionStartBuildingCount = sim.buildings.length;
+  const missionPanel        = document.getElementById('mission-panel');
+  const missionDescEl       = document.getElementById('mission-desc');
+  const missionProgressEl   = document.getElementById('mission-progress');
+  const missionToast        = document.getElementById('mission-toast');
+  const missionToastRewardEl = document.getElementById('mission-toast-reward');
+
+  function currentMission() { return MISSIONS[missionIndex % MISSIONS.length]; }
+
+  function updateMissionUI() {
+    if (!missionDescEl) return;
+    missionDescEl.textContent = currentMission().label;
+  }
+
+  function completeMission(m) {
+    sim.money += m.reward;
+    saveSim();
+    updateSimUI();
+    if (missionToast && missionToastRewardEl) {
+      missionToastRewardEl.textContent = '+' + m.reward + ' $';
+      missionToast.classList.remove('hidden');
+      setTimeout(() => missionToast.classList.add('hidden'), 2200);
+    }
+    missionIndex++;
+    missionStartBuildingCount = sim.buildings.length;
+    updateMissionUI();
+  }
+
+  function checkMissionProgress() {
+    const m = currentMission();
+
+    if (m.type === 'build') {
+      if (missionProgressEl) {
+        missionProgressEl.textContent = (sim.buildings.length - missionStartBuildingCount) + ' / 1 bâtiment';
+      }
+      if (sim.buildings.length > missionStartBuildingCount) completeMission(m);
+      return;
+    }
+
+    const isDriving = !!drivingCar;
+    const rightMode = (m.type === 'drive') === isDriving;
+    if (!rightMode) {
+      if (missionProgressEl) {
+        missionProgressEl.textContent = m.type === 'drive' ? '(monte dans une voiture — E)' : '(descends de la voiture — E)';
+      }
+      return;
+    }
+
+    const pos = drivingCar ? drivingCar.group.position : player.position;
+    const dist = Math.hypot(pos.x - m.x, pos.z - m.z);
+    if (missionProgressEl) missionProgressEl.textContent = Math.round(dist) + ' m';
+    if (dist < 4) completeMission(m);
+  }
+  updateMissionUI();
+
   /* ── Joystick virtuel (mobile) ──
      Renvoie un vecteur analogique (-1..1) fusionné avec le clavier dans
      updateWalkControls. touch-action:none sur l'élément + preventDefault
@@ -2259,17 +2343,21 @@
     }
     if (focused) return;
 
-    // Tourne en continu tant que le curseur n'est pas centré (voir le
-    // mousemove ci-dessous) — c'est ÇA qui fait "tourner la caméra", et
-    // comme fx/fz (plus bas) recalculent la direction de marche à partir
-    // de ce même orbit.theta à chaque frame, le déplacement suit toujours
-    // exactement là où on regarde désormais.
-    if (playerLookX !== 0) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
+    if (playerActive) checkMissionProgress();
 
     if (drivingCar) {
       updateCarControls();
       return; // le clavier pilote la voiture, pas le bonhomme, tant qu'on conduit
     }
+
+    // Tourne en continu tant que le curseur n'est pas centré (voir le
+    // mousemove ci-dessous) — c'est ÇA qui fait "tourner la caméra", et
+    // comme fx/fz (plus bas) recalculent la direction de marche à partir
+    // de ce même orbit.theta à chaque frame, le déplacement suit toujours
+    // exactement là où on regarde désormais. Inactif en voiture (return
+    // ci-dessus) : la caméra y est verrouillée derrière le véhicule, pas
+    // pilotée par la souris.
+    if (playerLookX !== 0) orbit.theta -= playerLookX * PLAYER_TURN_RATE;
     if (carPrompt) carPrompt.classList.toggle('hidden', !nearestCar());
 
     let fInput = 0, rInput = 0;
@@ -2657,14 +2745,38 @@
     // Orbite sphérique lissée (LERP faible = mouvement plus long/fluide)
     const LERP = 0.02;
     const FOCUS_LERP = 0.035;
+    const carChaseMode = playerActive && thirdPerson && drivingCar;
     // Lerp angulaire (gestion du wrap 0/2π pour éviter le saut) — toujours
-    // actif, y compris en vue 1re personne (lacet du regard).
-    let dt = orbit.theta - orbitSmooth.theta;
-    if (dt >  Math.PI) dt -= Math.PI * 2;
-    if (dt < -Math.PI) dt += Math.PI * 2;
-    orbitSmooth.theta += dt * (focused || playerActive ? FOCUS_LERP : LERP);
+    // actif, sauf en caméra de poursuite voiture (thêta y est piloté par
+    // le cap du véhicule, pas par la souris — voir plus bas).
+    if (!carChaseMode) {
+      let dt = orbit.theta - orbitSmooth.theta;
+      if (dt >  Math.PI) dt -= Math.PI * 2;
+      if (dt < -Math.PI) dt += Math.PI * 2;
+      orbitSmooth.theta += dt * (focused || playerActive ? FOCUS_LERP : LERP);
+    }
 
-    if (playerActive && !thirdPerson) {
+    if (carChaseMode) {
+      // Caméra verrouillée derrière la voiture (comme un jeu de course),
+      // PAS en orbite libre à la souris : sinon "tourner à droite" peut
+      // sembler aller à gauche à l'écran selon l'angle où se trouvait la
+      // caméra à ce moment précis. chaseTheta = carFacing - π/2 place la
+      // caméra derrière le véhicule avec la même formule sphérique que
+      // les autres vues (un thêta dérivé du cap, pas de la souris).
+      const chaseTheta = carFacing - Math.PI / 2;
+      let dtc = chaseTheta - chaseThetaSmooth;
+      if (dtc >  Math.PI) dtc -= Math.PI * 2;
+      if (dtc < -Math.PI) dtc += Math.PI * 2;
+      chaseThetaSmooth += dtc * 0.12;
+      const chasePhi = 1.15;
+      orbitSmooth.phi    += (chasePhi - orbitSmooth.phi) * FOCUS_LERP;
+      orbitSmooth.radius += (11 - orbitSmooth.radius) * FOCUS_LERP;
+      const carPos = drivingCar.group.position;
+      camera.position.x = carPos.x + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.sin(chaseThetaSmooth);
+      camera.position.y = 0.9 + orbitSmooth.radius * Math.cos(orbitSmooth.phi);
+      camera.position.z = carPos.z + orbitSmooth.radius * Math.sin(orbitSmooth.phi) * Math.cos(chaseThetaSmooth);
+      camera.lookAt(carPos.x, 0.9, carPos.z);
+    } else if (playerActive && !thirdPerson) {
       // Vue 1re personne : la caméra est aux yeux du bonhomme (ou du
       // conducteur, un peu plus haut, si on est en voiture), pas en
       // orbite autour d'un point — plus de rayon/hauteur d'orbite ici,

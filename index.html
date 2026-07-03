@@ -440,6 +440,22 @@ tailwind.config = {
   APPUIE SUR <span class="text-[#dbfcff]">E</span> POUR MONTER
 </div>
 
+<!-- Mission en cours : visible tant que le bonhomme est actif (marche ou
+     conduite). Donne un but concret au lieu de juste se balader. -->
+<div id="mission-panel" class="hidden fixed top-16 md:top-20 left-1/2 -translate-x-1/2 z-[60]
+                               glass-panel rounded-xl px-4 py-2.5 font-mono text-center min-w-[240px] max-w-[90vw]">
+  <div class="text-[#00f0ff] text-[9px] tracking-widest uppercase mb-1">// Mission</div>
+  <div id="mission-desc" class="text-[#dbfcff] text-[11px] leading-snug">—</div>
+  <div id="mission-progress" class="text-[#849495] text-[9px] mt-1">—</div>
+</div>
+
+<!-- Notification "mission accomplie", brève, au centre de l'écran. -->
+<div id="mission-toast" class="hidden fixed top-1/3 left-1/2 -translate-x-1/2 z-[70]
+                               glass-panel rounded-xl px-6 py-4 font-mono text-center pointer-events-none">
+  <div class="text-[#00f0ff] text-sm font-bold tracking-widest">MISSION ACCOMPLIE</div>
+  <div id="mission-toast-reward" class="text-[#dbfcff] text-xs mt-1">+0 $</div>
+</div>
+
 <!-- Joystick virtuel du mode piéton (mobile uniquement) -->
 <div id="walk-joystick" class="hidden fixed bottom-24 right-6 z-[60] select-none touch-none">
   <div class="relative w-24 h-24 rounded-full border border-[#00f0ff]/30 bg-[#0c1324]/60 backdrop-blur-md flex items-center justify-center">
